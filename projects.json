@@ -1,47 +1,47 @@
 [
   {
     "title": "Intel Sustainability Impact Analysis",
-    "subtitle": "Analyzed 600K+ devices, achieving 6,700 tons of CO₂ reduction",
+    "subtitle": "Assessed 600K+ device records to measure lifecycle CO₂ and energy savings through repurposing initiatives; identified 6,700+ tons of CO₂ reduction and 25.7 kWh energy savings per device annually using SQL joins and aggregation.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Intel-Sustainability-Impact-Analysis"
   },
   {
-    "title": "GameJet Transactions",
-    "subtitle": "Defined gamer personas; revealed <10% of users generate most revenue",
+    "title": "GameJet Transactions Analysis",
+    "subtitle": "Examined 22K+ user sessions and in-app purchases to classify player personas (Free, Minnow, Dolphin, Whale). Revealed that under 10% of users drive the majority of platform revenue, supporting pricing and engagement strategy.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/GameJet-Transactions"
   },
   {
     "title": "FastKitchen Customer Analysis",
-    "subtitle": "Segmented 50K+ customers and identified top 67% revenue contributors",
+    "subtitle": "Processed 50K+ customer orders to identify key spenders and frequency trends. Determined that top-tier customers contributed 67% of total sales, enabling targeted loyalty campaigns and data-backed retention models.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/FastKitchen-Customer-Analysis"
   },
   {
     "title": "NBA Performance Analysis",
-    "subtitle": "Evaluated 23K games; found declining home-win bias and rising 3-point trend",
+    "subtitle": "Analyzed 23K NBA games (2004–2020) to evaluate efficiency metrics and the evolution of home-court advantage. Found a 58.9% average home-win rate with a declining bias and rising 3-point performance correlation.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/NBA-Performance-Analysis"
   },
   {
-    "title": "Analyzing Startup Investments",
-    "subtitle": "Ranked 27K startups and exposed Cleantech risk concentration",
+    "title": "Startup Investment Analysis",
+    "subtitle": "Ranked 27K+ startups by funding totals to identify sector trends and anomalies. Highlighted $57B in Cleantech funding outliers and volatility patterns across industries, illustrating investor risk concentration.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Analyzing-Startup-Investments"
   },
   {
     "title": "London Transit Analysis",
-    "subtitle": "Modeled commuter flow to optimize route scheduling",
+    "subtitle": "Modeled commuter flow across London Underground zones using SQL time-series analysis. Identified peak congestion and underutilized segments, providing actionable insights for route optimization and scheduling.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/London-Transit-Analysis"
   },
   {
     "title": "YouTube Trending Analysis",
-    "subtitle": "Evaluated 6,351 videos; found engagement factors driving virality",
+    "subtitle": "Queried 6,351 trending videos to determine engagement drivers and category performance. Found correlation between engagement ratios (likes/comments/views) and daily ranking persistence to forecast viral content trends.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/YouTube-Trending-Analysis"
   },
   {
     "title": "Traffic Collisions in California",
-    "subtitle": "Joined 940K records to uncover leading collision factors",
+    "subtitle": "Processed 940K+ accident records integrating vehicle, driver, and condition datasets. Detected that weather, visibility, and impaired driving are leading risk factors, informing prevention strategies for safety programs.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Traffic-Collisions-California"
   },
   {
     "title": "Construction Job Demand Forecast",
-    "subtitle": "Correlated weather data with job requests to predict workforce needs",
+    "subtitle": "Correlated NOAA weather data with regional construction job requests using predictive SQL models. Identified patterns linking severe weather conditions with labor shortages, supporting operational workforce planning.",
     "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Construction-Job-Demand"
   }
 ]
