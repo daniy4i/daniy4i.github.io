@@ -1,0 +1,47 @@
+[
+  {
+    "title": "Intel Sustainability Impact Analysis",
+    "subtitle": "Analyzed 600K+ devices, achieving 6,700 tons of CO₂ reduction",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Intel-Sustainability-Impact-Analysis"
+  },
+  {
+    "title": "GameJet Transactions",
+    "subtitle": "Defined gamer personas; revealed <10% of users generate most revenue",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/GameJet-Transactions"
+  },
+  {
+    "title": "FastKitchen Customer Analysis",
+    "subtitle": "Segmented 50K+ customers and identified top 67% revenue contributors",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/FastKitchen-Customer-Analysis"
+  },
+  {
+    "title": "NBA Performance Analysis",
+    "subtitle": "Evaluated 23K games; found declining home-win bias and rising 3-point trend",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/NBA-Performance-Analysis"
+  },
+  {
+    "title": "Analyzing Startup Investments",
+    "subtitle": "Ranked 27K startups and exposed Cleantech risk concentration",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Analyzing-Startup-Investments"
+  },
+  {
+    "title": "London Transit Analysis",
+    "subtitle": "Modeled commuter flow to optimize route scheduling",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/London-Transit-Analysis"
+  },
+  {
+    "title": "YouTube Trending Analysis",
+    "subtitle": "Evaluated 6,351 videos; found engagement factors driving virality",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/YouTube-Trending-Analysis"
+  },
+  {
+    "title": "Traffic Collisions in California",
+    "subtitle": "Joined 940K records to uncover leading collision factors",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Traffic-Collisions-California"
+  },
+  {
+    "title": "Construction Job Demand Forecast",
+    "subtitle": "Correlated weather data with job requests to predict workforce needs",
+    "link": "https://github.com/daniy4i/data-analytics-sql-projects/tree/main/Construction-Job-Demand"
+  }
+]
