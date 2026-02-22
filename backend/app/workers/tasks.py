@@ -18,6 +18,7 @@ from app.ml.heuristics import bike_proximity_confidence, build_windows, close_fo
 from app.models.entities import AnalyticsWindow, Event, Job, Track
 from app.services.data_product import build_marketplace_payload, hash_payload
 from app.services.storage import download_file, upload_bytes
+from app.services.usage import record_job_processed
 from app.workers.artifacts import ARTIFACT_NAMES, artifact_entry, artifact_key
 from app.workers.datapack import DATAPACK_VERSION, contains_plate_like_keys
 from app.workers.celery_app import celery_app
@@ -485,5 +486,7 @@ def process_job(self, job_id: int):
             f"Processed {len(clip_sources)} clip(s) with YOLO tracking ({'enabled' if model else 'fallback mode'}), "
             f"tracks={sum(class_counts.values())}, events={sum(event_counts.values())}, artifacts={len(artifact_manifest)}"
         )
+        if job.org_id:
+            record_job_processed(db, job.org_id, total_duration)
         db.commit()
         logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), artifacts=len(artifact_manifest), clips=len(clip_sources))

@@ -7,6 +7,7 @@ from app.db.session import Base
 class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int | None] = mapped_column(ForeignKey("organizations.id"), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String(32), default="queued")
     filename: Mapped[str] = mapped_column(String(255))
@@ -62,3 +63,39 @@ class AnalyticsWindow(Base):
     congestion_score: Mapped[float] = mapped_column(Float)
     counts_json: Mapped[dict] = mapped_column(JSON, default=dict)
     motion_json: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    username: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    password: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(32), default="admin")
+
+
+class ApiToken(Base):
+    __tablename__ = "api_tokens"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class OrgUsageMonthly(Base):
+    __tablename__ = "org_usage_monthly"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    org_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), index=True)
+    year_month: Mapped[str] = mapped_column(String(7), index=True)
+    processed_minutes: Mapped[float] = mapped_column(Float, default=0.0)
+    jobs_total: Mapped[int] = mapped_column(Integer, default=0)
+    exports_total: Mapped[int] = mapped_column(Integer, default=0)

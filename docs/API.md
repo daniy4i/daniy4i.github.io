@@ -3,6 +3,11 @@
 Base path: `/api`
 
 - `POST /auth/login`
+- `GET /org/usage`
+- `GET /org/tokens`
+- `POST /org/tokens`
+- `DELETE /org/tokens/{token_id}`
+- `GET /org/data_catalog`
 - `POST /videos/upload`
 - `POST /jobs/{job_id}/run`
 - `GET /jobs`
@@ -20,6 +25,7 @@ Base path: `/api`
 All endpoints except login require `Authorization: Bearer <token>`.
 
 Upload supports either a single video (`mp4/mov/mkv`) or a ZIP containing multiple clips.
+All protected endpoints accept `Authorization: Bearer <jwt_or_api_token>`.
 
 Review payload:
 ```json

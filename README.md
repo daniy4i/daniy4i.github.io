@@ -77,6 +77,8 @@ make test
 curl -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}'
 curl -X GET http://localhost:8000/api/jobs -H "Authorization: Bearer <token>"
 curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' -d '{"review_status":"confirm","review_notes":"looks valid"}'
+curl -X GET http://localhost:8000/api/org/usage -H "Authorization: Bearer <token>"
+curl -X GET http://localhost:8000/api/org/data_catalog -H "Authorization: Bearer <token>"
 ```
 
 

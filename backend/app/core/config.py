@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     allowed_extensions: str = "mp4,mov,mkv"
     fps_sampled: int = 5
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    usage_limit_minutes_per_month: int = 5000
+    usage_limit_jobs_per_month: int = 200
+    usage_limit_exports_per_month: int = 500
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

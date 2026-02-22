@@ -21,6 +21,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <nav>
             <Link href="/upload" className="nav-link">Upload</Link>
             <Link href="/jobs" className="nav-link">Jobs</Link>
+            <Link href="/data-product" className="nav-link">Data Product</Link>
+            <Link href="/org" className="nav-link">Org Settings</Link>
           </nav>
         </header>
         <div className="page-shell">{children}</div>

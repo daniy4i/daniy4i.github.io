@@ -9,6 +9,7 @@ from app.api.routes import router
 from app.core.logging import configure_logging
 from app.db.session import Base, engine
 from app.core.config import settings
+from app.services.auth import ensure_default_admin
 
 configure_logging()
 
@@ -34,6 +35,7 @@ def startup_init_db() -> None:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             Base.metadata.create_all(bind=engine)
+            ensure_default_admin()
             return
         except SQLAlchemyError:
             if attempt == max_attempts:
