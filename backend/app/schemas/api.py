@@ -61,3 +61,14 @@ class DataProductOut(BaseModel):
     sha256: str
     url: str
 
+
+class ArtifactOut(BaseModel):
+    name: str
+    key: str
+    mime_type: str
+    size_bytes: int
+
+
+class ArtifactManifestOut(BaseModel):
+    job_id: int
+    artifacts: list[ArtifactOut]

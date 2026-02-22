@@ -11,6 +11,8 @@ Base path: `/api`
 - `GET /jobs/{job_id}/analytics`
 - `GET /jobs/{job_id}/event_clip/{event_id}`
 - `GET /jobs/{job_id}/preview`
+- `GET /jobs/{job_id}/artifacts`
+- `GET /jobs/{job_id}/artifacts/{name}`
 - `POST /events/{event_id}/review`
 
 All endpoints except login require `Authorization: Bearer <token>`.
@@ -36,6 +38,22 @@ Example response:
   "url": "https://..."
 }
 ```
+
+## GET /api/jobs/{job_id}/artifacts
+Returns the artifact manifest for the job.
+
+Example response:
+```json
+{
+  "job_id": 1,
+  "artifacts": [
+    {"name":"preview_tracking.mp4","key":"jobs/1/artifacts/preview_tracking.mp4","mime_type":"video/mp4","size_bytes":12345}
+  ]
+}
+```
+
+## GET /api/jobs/{job_id}/artifacts/{name}
+Returns a presigned URL for the requested artifact name.
 
 Example response:
 ```json

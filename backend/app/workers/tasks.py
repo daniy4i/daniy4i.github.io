@@ -1,10 +1,12 @@
 from collections import Counter, defaultdict
 from pathlib import Path
 import json
+import subprocess
 import tempfile
 
 import cv2
 import numpy as np
+import pandas as pd
 from sqlalchemy import select
 
 from app.core.logging import logger
@@ -13,6 +15,7 @@ from app.ml.heuristics import bike_proximity_confidence, build_windows, close_fo
 from app.models.entities import AnalyticsWindow, Event, Job, Track
 from app.services.data_product import build_marketplace_payload, hash_payload
 from app.services.storage import download_file, upload_bytes
+from app.workers.artifacts import ARTIFACT_NAMES, artifact_entry, artifact_key
 from app.workers.celery_app import celery_app
 
 try:
@@ -22,8 +25,7 @@ except Exception:  # pragma: no cover
 
 TARGET_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle", "person"}
 VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
-
-
+TRAIL_LENGTH = 20
 def _blur_privacy(frame: np.ndarray) -> np.ndarray:
     h, _ = frame.shape[:2]
     roi = frame[int(h * 0.2): int(h * 0.8), :]
@@ -33,6 +35,41 @@ def _blur_privacy(frame: np.ndarray) -> np.ndarray:
 
 def _safe_conf(value: float) -> float:
     return max(0.0, min(1.0, round(float(value), 3)))
+
+
+def _draw_detection(frame: np.ndarray, det: dict, trail: list[tuple[float, float]]) -> None:
+    x1 = int(det["xc"] - det["w"] / 2)
+    y1 = int(det["yc"] - det["h"] / 2)
+    x2 = int(det["xc"] + det["w"] / 2)
+    y2 = int(det["yc"] + det["h"] / 2)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (77, 255, 196), 2)
+    label = f"ID {det['track_id']} {det['class']} {det['conf']:.2f}"
+    cv2.putText(frame, label, (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (77, 255, 196), 2)
+    if len(trail) >= 2:
+        pts = np.array(trail[-TRAIL_LENGTH:], dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(frame, [pts], isClosed=False, color=(230, 230, 230), thickness=2)
+
+
+def _encode_preview_h264(src_path: str, out_path: str) -> None:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        src_path,
+        "-vf",
+        "scale=-2:720,fps=15",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-b:v",
+        "2200k",
+        "-movflags",
+        "+faststart",
+        "-an",
+        out_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
 
 
 @celery_app.task(
@@ -54,7 +91,14 @@ def process_job(self, job_id: int):
 
     with tempfile.TemporaryDirectory() as td:
         src = str(Path(td) / "src.mp4")
-        annotated_path = str(Path(td) / "annotated.mp4")
+        preview_raw_path = str(Path(td) / "preview_raw.mp4")
+        preview_path = str(Path(td) / ARTIFACT_NAMES["preview"])
+        summary_path = str(Path(td) / ARTIFACT_NAMES["summary"])
+        events_path = str(Path(td) / ARTIFACT_NAMES["events"])
+        tracks_path = str(Path(td) / ARTIFACT_NAMES["tracks"])
+        windows_parquet_path = str(Path(td) / ARTIFACT_NAMES["windows_parquet"])
+        windows_csv_path = str(Path(td) / ARTIFACT_NAMES["windows_csv"])
+
         download_file(job.storage_key, src)
 
         cap = cv2.VideoCapture(src)
@@ -66,14 +110,14 @@ def process_job(self, job_id: int):
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
-        sample_every = max(1, int(fps / max(job.settings_json.get("fps_sampled", 5), 1)))
+        sample_every = max(1, int(fps / max((job.settings_json or {}).get("fps_sampled", 5), 1)))
         job.fps_sampled = int(round(fps / sample_every))
         job.duration_s = total_frames / max(fps, 1)
 
         model = YOLO("yolov8n.pt") if YOLO else None
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(annotated_path, fourcc, fps, (frame_width, frame_height))
+        writer = cv2.VideoWriter(preview_raw_path, fourcc, max(1, job.fps_sampled), (frame_width, frame_height))
 
         samples: list[dict] = []
         track_history: dict[int, list[tuple[float, float]]] = defaultdict(list)
@@ -95,11 +139,11 @@ def process_job(self, job_id: int):
 
             if model:
                 result = model.track(frame, persist=True, verbose=False)[0]
-                annotated_frame = result.plot()
-                if result.boxes is not None:
+                if result.boxes is not None and len(result.boxes):
                     boxes = result.boxes
                     ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
-                    xys = boxes.xywh.cpu().numpy() if len(boxes) else []
+                    xys = boxes.xywh.cpu().numpy()
+                    confs = boxes.conf.cpu().tolist() if boxes.conf is not None else [0.0] * len(boxes)
 
                     for i, box in enumerate(boxes):
                         cls_name = result.names[int(box.cls[0])]
@@ -112,7 +156,7 @@ def process_job(self, job_id: int):
                         area_ratio = area / float(max(1, frame_width * frame_height))
                         track_id = int(tid) if tid is not None else -1
 
-                        detections.append({
+                        det = {
                             "class": cls_name,
                             "track_id": track_id,
                             "t": t,
@@ -120,18 +164,17 @@ def process_job(self, job_id: int):
                             "yc": float(y),
                             "w": float(w),
                             "h": float(h),
+                            "conf": float(confs[i]),
                             "area": area,
                             "area_ratio": area_ratio,
-                        })
+                        }
+                        detections.append(det)
 
                         if track_id >= 0:
-                            per_track_points[track_id].append(detections[-1])
+                            per_track_points[track_id].append(det)
                             history = track_history[track_id]
                             history.append((float(x), float(y)))
-                            if len(history) > 30:
-                                history.pop(0)
-                            pts = np.array(history, dtype=np.int32).reshape((-1, 1, 2))
-                            cv2.polylines(annotated_frame, [pts], isClosed=False, color=(220, 220, 220), thickness=2)
+                            _draw_detection(annotated_frame, det, history)
 
             motions = []
             for points in per_track_points.values():
@@ -153,6 +196,8 @@ def process_job(self, job_id: int):
 
         cap.release()
         writer.release()
+
+        _encode_preview_h264(preview_raw_path, preview_path)
 
         db.query(Event).filter(Event.job_id == job_id).delete()
         db.query(Track).filter(Track.job_id == job_id).delete()
@@ -206,16 +251,68 @@ def process_job(self, job_id: int):
                 motion_json={"avg_motion": round(w["avg_motion"], 2)},
             ))
 
-        clip_key = f"jobs/{job_id}/clips/annotated_preview.mp4"
-        with open(annotated_path, "rb") as f:
-            upload_bytes(clip_key, f.read(), "video/mp4")
-
         events = db.scalars(select(Event).where(Event.job_id == job_id)).all()
+        tracks = db.scalars(select(Track).where(Track.job_id == job_id)).all()
         for event in events:
-            event.clip_key = clip_key
+            event.clip_key = artifact_key(job_id, ARTIFACT_NAMES["preview"])
 
-        class_counts = Counter(track.class_name for track in db.scalars(select(Track).where(Track.job_id == job_id)).all())
+        class_counts = Counter(track.class_name for track in tracks)
         event_counts = Counter(event.type for event in events)
+
+        with open(events_path, "w", encoding="utf-8") as f:
+            for event in events:
+                f.write(json.dumps({
+                    "id": event.id,
+                    "track_id": event.track_id,
+                    "type": event.type,
+                    "timestamp": event.timestamp,
+                    "confidence": event.confidence,
+                    "details": event.details_json,
+                }) + "\n")
+
+        with open(tracks_path, "w", encoding="utf-8") as f:
+            for track in tracks:
+                f.write(json.dumps({
+                    "id": track.id,
+                    "class": track.class_name,
+                    "start_t": track.start_t,
+                    "end_t": track.end_t,
+                    "bbox_stats": track.bbox_stats_json,
+                    "motion_stats": track.motion_stats_json,
+                }) + "\n")
+
+        windows_df = pd.DataFrame(analytics_rows)
+        windows_df.to_parquet(windows_parquet_path, index=False)
+        windows_df.to_csv(windows_csv_path, index=False)
+
+        summary_payload = {
+            "job_id": job_id,
+            "status": "succeeded",
+            "duration_s": job.duration_s,
+            "fps_sampled": job.fps_sampled,
+            "tracks_total": int(sum(class_counts.values())),
+            "events_total": int(sum(event_counts.values())),
+            "class_counts": dict(class_counts),
+            "event_counts": dict(event_counts),
+            "windows_total": int(len(analytics_rows)),
+        }
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary_payload, f, indent=2)
+
+        artifacts = [
+            (ARTIFACT_NAMES["summary"], summary_path, "application/json"),
+            (ARTIFACT_NAMES["preview"], preview_path, "video/mp4"),
+            (ARTIFACT_NAMES["events"], events_path, "application/x-ndjson"),
+            (ARTIFACT_NAMES["tracks"], tracks_path, "application/x-ndjson"),
+            (ARTIFACT_NAMES["windows_parquet"], windows_parquet_path, "application/octet-stream"),
+            (ARTIFACT_NAMES["windows_csv"], windows_csv_path, "text/csv"),
+        ]
+        artifact_manifest = []
+        for name, path, mime_type in artifacts:
+            key = artifact_key(job_id, name)
+            with open(path, "rb") as f:
+                upload_bytes(key, f.read(), mime_type)
+            artifact_manifest.append(artifact_entry(name=name, key=key, path=path, mime_type=mime_type))
 
         marketplace_payload = build_marketplace_payload(
             job_id=job_id,
@@ -233,15 +330,16 @@ def process_job(self, job_id: int):
 
         job.settings_json = {
             **(job.settings_json or {}),
-            "preview_clip_key": clip_key,
+            "preview_clip_key": artifact_key(job_id, ARTIFACT_NAMES["preview"]),
             "marketplace_product_key": product_key,
             "marketplace_product_sha256": payload_hash,
         }
+        job.artifacts_json = {"artifacts": artifact_manifest}
 
         job.status = "succeeded"
         job.logs_summary = (
             f"Processed with YOLOv8 tracking ({'enabled' if model else 'fallback mode'}), "
-            f"tracks={sum(class_counts.values())}, events={sum(event_counts.values())}, data_hash={payload_hash[:12]}..."
+            f"tracks={sum(class_counts.values())}, events={sum(event_counts.values())}, artifacts={len(artifact_manifest)}"
         )
         db.commit()
-        logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), hash=payload_hash)
+        logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), artifacts=len(artifact_manifest))

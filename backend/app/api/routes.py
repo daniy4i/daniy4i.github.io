@@ -1,10 +1,11 @@
 from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.entities import AnalyticsWindow, Event, Job
-from app.schemas.api import AnalyticsWindowOut, AuthIn, DataProductOut, EventOut, JobOut, ReviewIn, TokenOut
+from app.schemas.api import AnalyticsWindowOut, ArtifactManifestOut, AuthIn, DataProductOut, EventOut, JobOut, ReviewIn, TokenOut
 from app.services.auth import issue_token, require_user
 from app.services.storage import signed_url, upload_bytes
 from app.core.config import settings
@@ -100,9 +101,31 @@ def job_preview(job_id: int, db: Session = Depends(get_db), _user: str = Depends
 
     preview_key = (job.settings_json or {}).get("preview_clip_key")
     if not preview_key:
-        preview_key = f"jobs/{job_id}/clips/annotated_preview.mp4"
+        preview_key = f"jobs/{job_id}/artifacts/preview_tracking.mp4"
 
     return {"url": signed_url(preview_key)}
+
+
+@router.get("/jobs/{job_id}/artifacts", response_model=ArtifactManifestOut)
+def job_artifacts(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+    artifacts = (job.artifacts_json or {}).get("artifacts", [])
+    return ArtifactManifestOut(job_id=job_id, artifacts=artifacts)
+
+
+@router.get("/jobs/{job_id}/artifacts/{name}")
+def job_artifact_url(job_id: int, name: str, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    artifacts = (job.artifacts_json or {}).get("artifacts", [])
+    match = next((a for a in artifacts if a.get("name") == name), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return RedirectResponse(url=signed_url(match["key"]))
 
 
 @router.post("/events/{event_id}/review", response_model=EventOut)

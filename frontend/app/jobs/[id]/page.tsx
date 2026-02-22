@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, BarChart, Bar } from "recharts";
-import { apiFetch, login, parseJsonSafe } from "../../../lib/api";
+import { API, apiFetch, login, parseJsonSafe } from "../../../lib/api";
 
 export default function JobDetail({ params }: { params: { id: string } }) {
   const [job, setJob] = useState<any>();
   const [events, setEvents] = useState<any[]>([]);
   const [analytics, setAnalytics] = useState<any[]>([]);
+  const [artifacts, setArtifacts] = useState<any[]>([]);
   const [previewUrl, setPreviewUrl] = useState("");
   const [error, setError] = useState("");
 
@@ -15,14 +16,15 @@ export default function JobDetail({ params }: { params: { id: string } }) {
       try {
         const token = await login();
         const headers = { Authorization: `Bearer ${token}` };
-        const [jobResp, eventsResp, analyticsResp, previewResp] = await Promise.all([
+        const [jobResp, eventsResp, analyticsResp, artifactsResp, previewResp] = await Promise.all([
           apiFetch(`/jobs/${params.id}`, { headers }),
           apiFetch(`/jobs/${params.id}/events`, { headers }),
           apiFetch(`/jobs/${params.id}/analytics`, { headers }),
-          apiFetch(`/jobs/${params.id}/preview`, { headers }),
+          apiFetch(`/jobs/${params.id}/artifacts`, { headers }),
+          apiFetch(`/jobs/${params.id}/artifacts/preview_tracking.mp4`, { headers }),
         ]);
-        const [jobData, eventsData, analyticsData, previewData] = await Promise.all([
-          parseJsonSafe(jobResp), parseJsonSafe(eventsResp), parseJsonSafe(analyticsResp), parseJsonSafe(previewResp),
+        const [jobData, eventsData, analyticsData, artifactsData, previewData] = await Promise.all([
+          parseJsonSafe(jobResp), parseJsonSafe(eventsResp), parseJsonSafe(analyticsResp), parseJsonSafe(artifactsResp), parseJsonSafe(previewResp),
         ]);
         if (!jobResp.ok) throw new Error(jobData?.detail || `Failed to load job (${jobResp.status})`);
         if (!eventsResp.ok) throw new Error(eventsData?.detail || `Failed to load events (${eventsResp.status})`);
@@ -30,6 +32,7 @@ export default function JobDetail({ params }: { params: { id: string } }) {
         setJob(jobData);
         setEvents(eventsData || []);
         setAnalytics(analyticsData || []);
+        setArtifacts(artifactsData?.artifacts || []);
         if (previewResp.ok) setPreviewUrl(previewData?.url || "");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load job details");
@@ -79,6 +82,21 @@ export default function JobDetail({ params }: { params: { id: string } }) {
             </p>
           </>
         )}
+      </section>
+
+      <section className="card">
+        <h3>Download Artifacts</h3>
+        {artifacts.length === 0 && <p className="muted">Artifacts will appear after processing completes.</p>}
+        <ul>
+          {artifacts.map((a) => (
+            <li key={a.name}>
+              <a href={`${API}/jobs/${params.id}/artifacts/${a.name}`} target="_blank" rel="noreferrer">
+                {a.name}
+              </a>
+              <span className="muted"> ({Math.round((a.size_bytes || 0) / 1024)} KB)</span>
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section className="card chart-wrap">

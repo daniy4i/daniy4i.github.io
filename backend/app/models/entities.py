@@ -13,6 +13,7 @@ class Job(Base):
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     fps_sampled: Mapped[int | None] = mapped_column(Integer, nullable=True)
     settings_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    artifacts_json: Mapped[dict] = mapped_column(JSON, default=dict)
     storage_key: Mapped[str] = mapped_column(String(512))
     logs_summary: Mapped[str] = mapped_column(Text, default="")
 
