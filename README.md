@@ -101,6 +101,13 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
 - Apple Silicon note: YOLO/Ultralytics is installed only on `x86_64` containers to avoid PyTorch wheel issues on ARM; ARM builds still run with fallback analytics mode.
 - Dependency note: NumPy is pinned to `1.26.4` to stay compatible with both `opencv-python-headless` and `ultralytics` during image builds.
 - If YOLO weights cannot download, worker still emits congestion windows using fallback motion stats.
+- If worker logs show `Received unregistered task of type 'app.workers.tasks.process_job'`, rebuild and restart backend+worker so Celery reloads task discovery:
+  ```bash
+  docker compose -f infra/docker-compose.yml down
+  docker compose -f infra/docker-compose.yml build --no-cache backend worker
+  docker compose -f infra/docker-compose.yml up -d
+  docker compose -f infra/docker-compose.yml logs -f worker
+  ```
 - Verify MinIO endpoint and credentials in `.env`/compose.
 
 
