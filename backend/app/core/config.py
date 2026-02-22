@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     upload_max_mb: int = 1024
     allowed_extensions: str = "mp4,mov,mkv"
     fps_sampled: int = 5
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

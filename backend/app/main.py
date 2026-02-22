@@ -1,16 +1,26 @@
 import time
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.routes import router
 from app.core.logging import configure_logging
 from app.db.session import Base, engine
+from app.core.config import settings
 
 configure_logging()
 
+
 app = FastAPI(title="NYC Traffic Intelligence")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(router)
 
 
