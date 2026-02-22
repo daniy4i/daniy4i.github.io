@@ -40,8 +40,8 @@ Last backend logs:"
     docker compose -f infra/docker-compose.yml logs backend --tail=120 || true
     echo "
 Tips:"
-    echo "- Retry: docker compose -f infra/docker-compose.yml restart backend"
-    echo "- Follow logs: docker compose -f infra/docker-compose.yml logs -f backend"
+    echo "- Retry: cd "$ROOT_DIR" && docker compose -f infra/docker-compose.yml restart backend"
+    echo "- Follow logs: cd "$ROOT_DIR" && docker compose -f infra/docker-compose.yml logs -f backend"
     exit 1
   fi
 done
@@ -58,4 +58,4 @@ echo "3) Open Jobs page and click a job ID"
 echo "4) If needed, trigger run using API docs at /docs: POST /api/jobs/{job_id}/run"
 
 echo "\nTo stop everything later:"
-echo "docker compose -f infra/docker-compose.yml down -v"
+echo "cd "$ROOT_DIR" && docker compose -f infra/docker-compose.yml down -v"

@@ -77,6 +77,7 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
 
 ## Troubleshooting
 - Ensure Docker daemon is running.
+- If you see `open .../infra/docker-compose.yml: no such file or directory`, you are in the wrong folder. Run `cd /Users/<you>/Documents/GitHub/daniy4i.github.io` first, then retry commands.
 - If you get `make: *** No rule to make target \`do-it-all\``:
   1. Run `git pull` to get the latest `Makefile` and `scripts/` folder.
   2. Retry with either `make do-it-all` or `make do_it_all`.
