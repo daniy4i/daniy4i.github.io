@@ -67,6 +67,7 @@ class ArtifactOut(BaseModel):
     key: str
     mime_type: str
     size_bytes: int
+    sha256: str
 
 
 class ArtifactManifestOut(BaseModel):

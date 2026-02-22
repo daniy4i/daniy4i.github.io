@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import subprocess
 import tempfile
+import zipfile
 
 import cv2
 import numpy as np
@@ -16,6 +17,7 @@ from app.models.entities import AnalyticsWindow, Event, Job, Track
 from app.services.data_product import build_marketplace_payload, hash_payload
 from app.services.storage import download_file, upload_bytes
 from app.workers.artifacts import ARTIFACT_NAMES, artifact_entry, artifact_key
+from app.workers.datapack import DATAPACK_VERSION, compute_window_metrics, contains_plate_like_keys
 from app.workers.celery_app import celery_app
 
 try:
@@ -95,9 +97,12 @@ def process_job(self, job_id: int):
         preview_path = str(Path(td) / ARTIFACT_NAMES["preview"])
         summary_path = str(Path(td) / ARTIFACT_NAMES["summary"])
         events_path = str(Path(td) / ARTIFACT_NAMES["events"])
+        events_csv_path = str(Path(td) / ARTIFACT_NAMES["events_csv"])
         tracks_path = str(Path(td) / ARTIFACT_NAMES["tracks"])
+        tracks_csv_path = str(Path(td) / ARTIFACT_NAMES["tracks_csv"])
         windows_parquet_path = str(Path(td) / ARTIFACT_NAMES["windows_parquet"])
         windows_csv_path = str(Path(td) / ARTIFACT_NAMES["windows_csv"])
+        datapack_zip_path = str(Path(td) / ARTIFACT_NAMES["data_pack_zip"])
 
         download_file(job.storage_key, src)
 
@@ -202,6 +207,7 @@ def process_job(self, job_id: int):
         db.query(Event).filter(Event.job_id == job_id).delete()
         db.query(Track).filter(Track.job_id == job_id).delete()
 
+        track_rows_points: dict[int, list[dict]] = {}
         for _, pts in per_track_points.items():
             if not pts:
                 continue
@@ -216,6 +222,7 @@ def process_job(self, job_id: int):
             )
             db.add(track)
             db.flush()
+            track_rows_points[track.id] = pts
 
             if class_name in VEHICLE_CLASSES:
                 cut_conf = _safe_conf(cut_in_confidence(pts, frame_width))
@@ -235,12 +242,15 @@ def process_job(self, job_id: int):
         analytics_rows = []
         for w in build_windows(samples, window_s=5):
             score = congestion_score(w["active_tracks"], w["avg_motion"])
+            metrics = compute_window_metrics(w["active_tracks"], w["avg_motion"])
             analytics_rows.append({
+                "datapack_version": DATAPACK_VERSION,
                 "t_start": w["t_start"],
                 "t_end": w["t_end"],
                 "active_tracks": w["active_tracks"],
                 "avg_motion": round(w["avg_motion"], 2),
                 "congestion_score": score,
+                **metrics,
             })
             db.add(AnalyticsWindow(
                 job_id=job_id,
@@ -261,51 +271,119 @@ def process_job(self, job_id: int):
 
         with open(events_path, "w", encoding="utf-8") as f:
             for event in events:
-                f.write(json.dumps({
+                row = {
+                    "datapack_version": DATAPACK_VERSION,
                     "id": event.id,
                     "track_id": event.track_id,
                     "type": event.type,
                     "timestamp": event.timestamp,
                     "confidence": event.confidence,
                     "details": event.details_json,
-                }) + "\n")
+                    "clip_key": event.clip_key,
+                    "review_status": event.review_status,
+                }
+                if contains_plate_like_keys(row):
+                    raise RuntimeError("Data pack event export contains plate-like keys")
+                f.write(json.dumps(row) + "\n")
+
+        events_df = pd.DataFrame([
+            {
+                "datapack_version": DATAPACK_VERSION,
+                "event_id": event.id,
+                "type": event.type,
+                "timestamp": event.timestamp,
+                "confidence": event.confidence,
+                "track_id": event.track_id,
+                "details_json": json.dumps(event.details_json),
+                "clip_key": event.clip_key,
+                "review_status": event.review_status,
+            }
+            for event in events
+        ])
+        events_df.to_csv(events_csv_path, index=False)
 
         with open(tracks_path, "w", encoding="utf-8") as f:
             for track in tracks:
-                f.write(json.dumps({
+                points = track_rows_points.get(track.id) or []
+                sampled_traj = [{"t": p["t"], "x": p["xc"], "y": p["yc"]} for p in points[:: max(1, len(points) // 20 or 1)]]
+                row = {
+                    "datapack_version": DATAPACK_VERSION,
                     "id": track.id,
                     "class": track.class_name,
                     "start_t": track.start_t,
                     "end_t": track.end_t,
                     "bbox_stats": track.bbox_stats_json,
                     "motion_stats": track.motion_stats_json,
-                }) + "\n")
+                    "trajectory_sampled": sampled_traj,
+                }
+                if contains_plate_like_keys(row):
+                    raise RuntimeError("Data pack track export contains plate-like keys")
+                f.write(json.dumps(row) + "\n")
+
+        tracks_df = pd.DataFrame([
+            {
+                "datapack_version": DATAPACK_VERSION,
+                "track_id": track.id,
+                "class": track.class_name,
+                "start_t": track.start_t,
+                "end_t": track.end_t,
+                "bbox_stats_json": json.dumps(track.bbox_stats_json),
+                "motion_stats_json": json.dumps(track.motion_stats_json),
+                "trajectory_sampled": json.dumps([
+                    {"t": p["t"], "x": p["xc"], "y": p["yc"]}
+                    for p in (track_rows_points.get(track.id) or [])[:: max(1, (len(track_rows_points.get(track.id) or []) // 20) or 1)]
+                ]),
+            }
+            for track in tracks
+        ])
+        tracks_df.to_csv(tracks_csv_path, index=False)
 
         windows_df = pd.DataFrame(analytics_rows)
         windows_df.to_parquet(windows_parquet_path, index=False)
         windows_df.to_csv(windows_csv_path, index=False)
 
         summary_payload = {
+            "datapack_version": DATAPACK_VERSION,
             "job_id": job_id,
             "status": "succeeded",
             "duration_s": job.duration_s,
             "fps_sampled": job.fps_sampled,
+            "settings": job.settings_json or {},
+            "privacy": {"contains_identifiers": False, "contains_raw_plates": False},
             "tracks_total": int(sum(class_counts.values())),
             "events_total": int(sum(event_counts.values())),
             "class_counts": dict(class_counts),
             "event_counts": dict(event_counts),
             "windows_total": int(len(analytics_rows)),
         }
+
+        if contains_plate_like_keys(analytics_rows):
+            raise RuntimeError("Data pack windows export contains plate-like keys")
+
+        if contains_plate_like_keys(summary_payload):
+            raise RuntimeError("Data pack contains plate-like keys")
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary_payload, f, indent=2)
+
+        with zipfile.ZipFile(datapack_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(summary_path, arcname=ARTIFACT_NAMES["summary"])
+            zf.write(windows_parquet_path, arcname=ARTIFACT_NAMES["windows_parquet"])
+            zf.write(windows_csv_path, arcname=ARTIFACT_NAMES["windows_csv"])
+            zf.write(events_path, arcname=ARTIFACT_NAMES["events"])
+            zf.write(events_csv_path, arcname=ARTIFACT_NAMES["events_csv"])
+            zf.write(tracks_path, arcname=ARTIFACT_NAMES["tracks"])
+            zf.write(tracks_csv_path, arcname=ARTIFACT_NAMES["tracks_csv"])
 
         artifacts = [
             (ARTIFACT_NAMES["summary"], summary_path, "application/json"),
             (ARTIFACT_NAMES["preview"], preview_path, "video/mp4"),
             (ARTIFACT_NAMES["events"], events_path, "application/x-ndjson"),
+            (ARTIFACT_NAMES["events_csv"], events_csv_path, "text/csv"),
             (ARTIFACT_NAMES["tracks"], tracks_path, "application/x-ndjson"),
+            (ARTIFACT_NAMES["tracks_csv"], tracks_csv_path, "text/csv"),
             (ARTIFACT_NAMES["windows_parquet"], windows_parquet_path, "application/octet-stream"),
             (ARTIFACT_NAMES["windows_csv"], windows_csv_path, "text/csv"),
+            (ARTIFACT_NAMES["data_pack_zip"], datapack_zip_path, "application/zip"),
         ]
         artifact_manifest = []
         for name, path, mime_type in artifacts:

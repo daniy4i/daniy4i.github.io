@@ -14,6 +14,7 @@ def test_artifact_entry_collects_metadata(tmp_path: Path):
     assert out["key"].endswith("preview_tracking.mp4")
     assert out["mime_type"] == "video/mp4"
     assert out["size_bytes"] == len(payload)
+    assert len(out["sha256"]) == 64
 
 
 def test_required_artifact_names_present():

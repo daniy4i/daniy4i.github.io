@@ -85,6 +85,7 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
 - Writes a privacy-blurred annotated preview video and links it to detected events.
 - Standardizes job artifacts under `jobs/{job_id}/artifacts/*`:
   `job_summary.json`, `preview_tracking.mp4`, `events.jsonl`, `tracks.jsonl`, `windows.parquet` (and `windows.csv`).
+- Data Pack v1 exports include CSV/JSONL/Parquet variants plus `data_pack_v1.zip`, each with SHA-256 in the artifact manifest.
 - Computes congestion windows and behavior proxy events from tracked trajectories.
 - Produces a marketplace-ready anonymized aggregate JSON package and SHA-256 hash for integrity verification.
 
@@ -121,4 +122,5 @@ curl -H "Authorization: Bearer <token>" http://localhost:8000/api/jobs/<job_id>/
 # Artifact manifest + direct artifact URL
 curl -H "Authorization: Bearer <token>" http://localhost:8000/api/jobs/<job_id>/artifacts
 curl -H "Authorization: Bearer <token>" -L http://localhost:8000/api/jobs/<job_id>/artifacts/preview_tracking.mp4 -o preview_tracking.mp4
+curl -H "Authorization: Bearer <token>" -L "http://localhost:8000/api/jobs/<job_id>/data_pack?format=zip" -o data_pack_v1.zip
 ```

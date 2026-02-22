@@ -13,6 +13,7 @@ Base path: `/api`
 - `GET /jobs/{job_id}/preview`
 - `GET /jobs/{job_id}/artifacts`
 - `GET /jobs/{job_id}/artifacts/{name}`
+- `GET /jobs/{job_id}/data_pack?format=zip|parquet|csv|jsonl`
 - `POST /events/{event_id}/review`
 
 All endpoints except login require `Authorization: Bearer <token>`.
@@ -30,7 +31,7 @@ Review payload:
 Returns a presigned URL for an anonymized aggregated data product plus its SHA-256 hash.
 
 ## GET /api/jobs/{job_id}/preview
-Returns a presigned URL for the processed preview video (`annotated_preview.mp4`).
+Returns a presigned URL for the processed preview video (`preview_tracking.mp4`).
 
 Example response:
 ```json
@@ -54,6 +55,13 @@ Example response:
 
 ## GET /api/jobs/{job_id}/artifacts/{name}
 Returns a presigned URL for the requested artifact name.
+
+## GET /api/jobs/{job_id}/data_pack?format=zip|parquet|csv|jsonl
+Returns a presigned URL for Data Pack v1 exports:
+- `zip` -> `data_pack_v1.zip`
+- `parquet` -> `windows.parquet`
+- `csv` -> `windows.csv`
+- `jsonl` -> `events.jsonl`
 
 Example response:
 ```json

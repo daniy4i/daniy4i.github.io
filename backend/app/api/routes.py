@@ -1,5 +1,5 @@
 from pathlib import Path
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -125,6 +125,31 @@ def job_artifact_url(job_id: int, name: str, db: Session = Depends(get_db), _use
     match = next((a for a in artifacts if a.get("name") == name), None)
     if not match:
         raise HTTPException(status_code=404, detail="Artifact not found")
+    return RedirectResponse(url=signed_url(match["key"]))
+
+
+@router.get("/jobs/{job_id}/data_pack")
+def job_data_pack(
+    job_id: int,
+    format: str = Query(default="zip", pattern="^(zip|parquet|csv|jsonl)$"),
+    db: Session = Depends(get_db),
+    _user: str = Depends(require_user),
+):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    format_to_name = {
+        "zip": "data_pack_v1.zip",
+        "parquet": "windows.parquet",
+        "csv": "windows.csv",
+        "jsonl": "events.jsonl",
+    }
+    target_name = format_to_name[format]
+    artifacts = (job.artifacts_json or {}).get("artifacts", [])
+    match = next((a for a in artifacts if a.get("name") == target_name), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Data pack artifact not ready")
     return RedirectResponse(url=signed_url(match["key"]))
 
 

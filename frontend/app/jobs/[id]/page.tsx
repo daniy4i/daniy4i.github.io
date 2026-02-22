@@ -86,6 +86,11 @@ export default function JobDetail({ params }: { params: { id: string } }) {
 
       <section className="card">
         <h3>Download Artifacts</h3>
+        <p>
+          <a className="btn btn-primary" href={`${API}/jobs/${params.id}/data_pack?format=zip`} target="_blank" rel="noreferrer">
+            Download Data Pack (ZIP)
+          </a>
+        </p>
         {artifacts.length === 0 && <p className="muted">Artifacts will appear after processing completes.</p>}
         <ul>
           {artifacts.map((a) => (
@@ -94,6 +99,7 @@ export default function JobDetail({ params }: { params: { id: string } }) {
                 {a.name}
               </a>
               <span className="muted"> ({Math.round((a.size_bytes || 0) / 1024)} KB)</span>
+              {a.sha256 && <code style={{ marginLeft: 8 }}>{String(a.sha256).slice(0, 12)}…</code>}
             </li>
           ))}
         </ul>
