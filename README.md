@@ -87,6 +87,7 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
   `job_summary.json`, `preview_tracking.mp4`, `events.jsonl`, `tracks.jsonl`, `windows.parquet` (and `windows.csv`).
 - Data Pack v1 exports include CSV/JSONL/Parquet variants plus `data_pack_v1.zip`, each with SHA-256 in the artifact manifest.
 - Computes congestion windows and behavior proxy events from tracked trajectories.
+- Uses ego-motion compensation (global frame motion subtraction) so speed/stopped proxies are less biased by dashcam movement.
 - Produces a marketplace-ready anonymized aggregate JSON package and SHA-256 hash for integrity verification.
 
 ## Privacy model

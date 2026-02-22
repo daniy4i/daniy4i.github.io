@@ -12,12 +12,13 @@ from sqlalchemy import select
 
 from app.core.logging import logger
 from app.db.session import SessionLocal
+from app.ml.ego_motion import estimate_global_motion
 from app.ml.heuristics import bike_proximity_confidence, build_windows, close_following_confidence, congestion_score, cut_in_confidence
 from app.models.entities import AnalyticsWindow, Event, Job, Track
 from app.services.data_product import build_marketplace_payload, hash_payload
 from app.services.storage import download_file, upload_bytes
 from app.workers.artifacts import ARTIFACT_NAMES, artifact_entry, artifact_key
-from app.workers.datapack import DATAPACK_VERSION, compute_window_metrics, contains_plate_like_keys
+from app.workers.datapack import DATAPACK_VERSION, contains_plate_like_keys
 from app.workers.celery_app import celery_app
 
 try:
@@ -129,6 +130,7 @@ def process_job(self, job_id: int):
         per_track_points: dict[int, list[dict]] = defaultdict(list)
 
         frame_idx = 0
+        prev_sampled_frame = None
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -139,6 +141,7 @@ def process_job(self, job_id: int):
                 continue
 
             t = frame_idx / max(fps, 1)
+            global_dx, global_dy = estimate_global_motion(prev_sampled_frame, frame)
             detections: list[dict] = []
             annotated_frame = frame.copy()
 
@@ -181,22 +184,35 @@ def process_job(self, job_id: int):
                             history.append((float(x), float(y)))
                             _draw_detection(annotated_frame, det, history)
 
-            motions = []
+            raw_motions = []
+            comp_motions = []
             for points in per_track_points.values():
                 if len(points) >= 2 and abs(points[-1]["t"] - t) < (2 * sample_every / max(fps, 1)):
-                    dx = points[-1]["xc"] - points[-2]["xc"]
-                    dy = points[-1]["yc"] - points[-2]["yc"]
-                    motions.append(float(np.hypot(dx, dy)))
-            avg_motion = float(np.mean(motions)) if motions else 0.0
+                    raw_dx = points[-1]["xc"] - points[-2]["xc"]
+                    raw_dy = points[-1]["yc"] - points[-2]["yc"]
+                    comp_dx = raw_dx - global_dx
+                    comp_dy = raw_dy - global_dy
+                    points[-1]["raw_dx"] = float(raw_dx)
+                    points[-1]["raw_dy"] = float(raw_dy)
+                    points[-1]["comp_dx"] = float(comp_dx)
+                    points[-1]["comp_dy"] = float(comp_dy)
+                    raw_motions.append(float(np.hypot(raw_dx, raw_dy)))
+                    comp_motions.append(float(np.hypot(comp_dx, comp_dy)))
+            avg_raw_motion = float(np.mean(raw_motions)) if raw_motions else 0.0
+            avg_comp_motion = float(np.mean(comp_motions)) if comp_motions else 0.0
 
             samples.append({
                 "t": t,
                 "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}),
-                "motion": avg_motion,
+                "raw_motion": avg_raw_motion,
+                "comp_motion": avg_comp_motion,
+                "global_dx": float(global_dx),
+                "global_dy": float(global_dy),
             })
 
             annotated_frame = _blur_privacy(annotated_frame)
             writer.write(annotated_frame)
+            prev_sampled_frame = frame.copy()
             frame_idx += 1
 
         cap.release()
@@ -218,7 +234,19 @@ def process_job(self, job_id: int):
                 start_t=pts[0]["t"],
                 end_t=pts[-1]["t"],
                 bbox_stats_json={"max_area": max(p["area"] for p in pts), "mean_area": float(np.mean([p["area"] for p in pts]))},
-                motion_stats_json={"points": len(pts)},
+                motion_stats_json={
+                    "points": len(pts),
+                    "avg_raw_speed": float(np.mean([np.hypot(p.get("raw_dx", 0.0), p.get("raw_dy", 0.0)) for p in pts])),
+                    "avg_compensated_speed": float(np.mean([np.hypot(p.get("comp_dx", 0.0), p.get("comp_dy", 0.0)) for p in pts])),
+                    "raw_displacement": {
+                        "dx": float(sum(p.get("raw_dx", 0.0) for p in pts)),
+                        "dy": float(sum(p.get("raw_dy", 0.0) for p in pts)),
+                    },
+                    "compensated_displacement": {
+                        "dx": float(sum(p.get("comp_dx", 0.0) for p in pts)),
+                        "dy": float(sum(p.get("comp_dy", 0.0) for p in pts)),
+                    },
+                },
             )
             db.add(track)
             db.flush()
@@ -241,16 +269,23 @@ def process_job(self, job_id: int):
         db.query(AnalyticsWindow).filter(AnalyticsWindow.job_id == job_id).delete()
         analytics_rows = []
         for w in build_windows(samples, window_s=5):
-            score = congestion_score(w["active_tracks"], w["avg_motion"])
-            metrics = compute_window_metrics(w["active_tracks"], w["avg_motion"])
+            score = congestion_score(
+                w["active_tracks"],
+                w["avg_compensated_speed"],
+                w["stopped_ratio"],
+                w["density_index"],
+            )
             analytics_rows.append({
                 "datapack_version": DATAPACK_VERSION,
                 "t_start": w["t_start"],
                 "t_end": w["t_end"],
                 "active_tracks": w["active_tracks"],
-                "avg_motion": round(w["avg_motion"], 2),
+                "avg_raw_speed": round(w["avg_raw_speed"], 3),
+                "avg_compensated_speed": round(w["avg_compensated_speed"], 3),
+                "avg_speed_proxy": round(w["avg_speed_proxy"], 3),
+                "stopped_ratio": round(w["stopped_ratio"], 3),
+                "density_index": round(w["density_index"], 3),
                 "congestion_score": score,
-                **metrics,
             })
             db.add(AnalyticsWindow(
                 job_id=job_id,
@@ -258,7 +293,13 @@ def process_job(self, job_id: int):
                 t_end=w["t_end"],
                 congestion_score=score,
                 counts_json={"active_tracks": w["active_tracks"]},
-                motion_json={"avg_motion": round(w["avg_motion"], 2)},
+                motion_json={
+                    "avg_raw_speed": round(w["avg_raw_speed"], 3),
+                    "avg_compensated_speed": round(w["avg_compensated_speed"], 3),
+                    "avg_speed_proxy": round(w["avg_speed_proxy"], 3),
+                    "stopped_ratio": round(w["stopped_ratio"], 3),
+                    "density_index": round(w["density_index"], 3),
+                },
             ))
 
         events = db.scalars(select(Event).where(Event.job_id == job_id)).all()

@@ -34,10 +34,16 @@ def bike_proximity_confidence(bike_points: list[dict], frame_w: int) -> float:
     return min(1.0, 0.4 + len(close) * 0.1)
 
 
-def congestion_score(active_tracks: int, avg_motion: float) -> float:
-    density = min(1.0, active_tracks / 20)
-    low_motion = 1 - min(1.0, avg_motion / 25)
-    return round(100 * (0.6 * density + 0.4 * low_motion), 2)
+def congestion_score(active_tracks: int, avg_compensated_speed: float, stopped_ratio: float, density_index: float) -> float:
+    """
+    Congestion score (0..100):
+      45% density pressure + 35% stopped-pressure + 20% low compensated speed pressure.
+    """
+    density = max(0.0, min(1.0, density_index if density_index is not None else (active_tracks / 20.0)))
+    stopped = max(0.0, min(1.0, stopped_ratio))
+    low_speed = 1.0 - min(1.0, max(0.0, avg_compensated_speed) / 8.0)
+    score = 100.0 * (0.45 * density + 0.35 * stopped + 0.20 * low_speed)
+    return round(max(0.0, min(100.0, score)), 2)
 
 
 def build_windows(samples: list[dict], window_s: int = 5) -> list[dict]:
@@ -46,11 +52,19 @@ def build_windows(samples: list[dict], window_s: int = 5) -> list[dict]:
         buckets[int(s["t"] // window_s)].append(s)
     out = []
     for idx, vals in sorted(buckets.items()):
-        motions = [v.get("motion", 0.0) for v in vals]
+        raw_motions = [v.get("raw_motion", 0.0) for v in vals]
+        comp_motions = [v.get("comp_motion", 0.0) for v in vals]
+        active_tracks = max(v.get("active_tracks", 0) for v in vals)
+        density_index = min(1.0, active_tracks / 20.0)
+        stopped_ratio = sum(1 for m in comp_motions if m < 1.0) / max(1, len(comp_motions))
         out.append({
             "t_start": idx * window_s,
             "t_end": (idx + 1) * window_s,
-            "active_tracks": max(v.get("active_tracks", 0) for v in vals),
-            "avg_motion": sum(motions) / max(1, len(motions)),
+            "active_tracks": active_tracks,
+            "avg_raw_speed": sum(raw_motions) / max(1, len(raw_motions)),
+            "avg_compensated_speed": sum(comp_motions) / max(1, len(comp_motions)),
+            "stopped_ratio": stopped_ratio,
+            "density_index": density_index,
+            "avg_speed_proxy": sum(comp_motions) / max(1, len(comp_motions)),
         })
     return out

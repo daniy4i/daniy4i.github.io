@@ -16,5 +16,11 @@ def test_close_following_confidence_duration():
 
 
 def test_congestion_score_bounds():
-    score = congestion_score(18, 2)
+    score = congestion_score(18, avg_compensated_speed=2, stopped_ratio=0.7, density_index=0.9)
     assert 0 <= score <= 100
+
+
+def test_congestion_score_monotonicity():
+    freer = congestion_score(4, avg_compensated_speed=6.0, stopped_ratio=0.1, density_index=0.2)
+    congested = congestion_score(18, avg_compensated_speed=0.8, stopped_ratio=0.9, density_index=0.9)
+    assert congested > freer

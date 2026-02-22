@@ -2,7 +2,7 @@ from app.workers.datapack import DATAPACK_VERSION, compute_window_metrics, conta
 
 
 def test_compute_window_metrics_schema():
-    out = compute_window_metrics(active_tracks=8, avg_motion=4.5)
+    out = compute_window_metrics(active_tracks=8, avg_compensated_speed=4.5)
     assert set(out.keys()) == {"stopped_ratio", "density_index", "avg_speed_proxy"}
     assert 0.0 <= out["stopped_ratio"] <= 1.0
     assert 0.0 <= out["density_index"] <= 1.0
