@@ -1,0 +1,96 @@
+from pathlib import Path
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from app.db.session import get_db
+from app.models.entities import AnalyticsWindow, Event, Job
+from app.schemas.api import AnalyticsWindowOut, AuthIn, EventOut, JobOut, ReviewIn, TokenOut
+from app.services.auth import issue_token, require_user
+from app.services.storage import signed_url, upload_bytes
+from app.core.config import settings
+from app.workers.tasks import process_job
+
+router = APIRouter(prefix="/api")
+
+
+@router.post("/auth/login", response_model=TokenOut)
+def login(payload: AuthIn):
+    if payload.username != "admin" or payload.password != "admin":
+        raise HTTPException(status_code=401, detail="Bad credentials")
+    return TokenOut(access_token=issue_token(payload.username))
+
+
+@router.post("/videos/upload", response_model=JobOut)
+async def upload_video(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _user: str = Depends(require_user),
+):
+    ext = Path(file.filename).suffix.lower().replace(".", "")
+    if ext not in settings.allowed_extensions.split(","):
+        raise HTTPException(status_code=400, detail="Unsupported format")
+    payload = await file.read()
+    if len(payload) > settings.upload_max_mb * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large")
+    key = f"jobs/raw/{file.filename}"
+    upload_bytes(key, payload, file.content_type or "video/mp4")
+    job = Job(filename=file.filename, storage_key=key, settings_json={"fps_sampled": settings.fps_sampled})
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.post("/jobs/{job_id}/run", response_model=JobOut)
+def run_job(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+    process_job.delay(job_id)
+    job.status = "queued"
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.get("/jobs", response_model=list[JobOut])
+def jobs(db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    return db.scalars(select(Job).order_by(Job.id.desc())).all()
+
+
+@router.get("/jobs/{job_id}", response_model=JobOut)
+def job_detail(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+    return job
+
+
+@router.get("/jobs/{job_id}/events", response_model=list[EventOut])
+def events(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    return db.scalars(select(Event).where(Event.job_id == job_id).order_by(Event.timestamp)).all()
+
+
+@router.get("/jobs/{job_id}/analytics", response_model=list[AnalyticsWindowOut])
+def analytics(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    return db.scalars(select(AnalyticsWindow).where(AnalyticsWindow.job_id == job_id).order_by(AnalyticsWindow.t_start)).all()
+
+
+@router.get("/jobs/{job_id}/event_clip/{event_id}")
+def event_clip(job_id: int, event_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    event = db.get(Event, event_id)
+    if not event or event.job_id != job_id or not event.clip_key:
+        raise HTTPException(status_code=404, detail="Clip missing")
+    return {"url": signed_url(event.clip_key)}
+
+
+@router.post("/events/{event_id}/review", response_model=EventOut)
+def review(event_id: int, payload: ReviewIn, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    event = db.get(Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Not found")
+    event.review_status = payload.review_status
+    event.review_notes = payload.review_notes
+    db.commit()
+    db.refresh(event)
+    return event
