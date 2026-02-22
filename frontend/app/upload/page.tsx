@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { API, login } from "../../lib/api";
+import { apiFetch, login, parseJsonSafe } from "../../lib/api";
 
 export default function UploadPage() {
   const [msg, setMsg] = useState("");
@@ -10,8 +10,8 @@ export default function UploadPage() {
     try {
       const form = new FormData(e.currentTarget);
       const token = await login();
-      const r = await fetch(`${API}/videos/upload`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
-      const data = await r.json();
+      const r = await apiFetch(`/videos/upload`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form });
+      const data = await parseJsonSafe(r);
       if (!r.ok) {
         throw new Error(data?.detail || `Upload failed (${r.status})`);
       }
