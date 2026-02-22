@@ -13,6 +13,11 @@ from app.workers.tasks import process_job
 router = APIRouter(prefix="/api")
 
 
+def enqueue_job(job_id: int) -> None:
+    # Force the queue name explicitly so jobs are consumed by the worker started with `-Q video`.
+    process_job.apply_async(args=[job_id], queue="video")
+
+
 @router.post("/auth/login", response_model=TokenOut)
 def login(payload: AuthIn):
     if payload.username != "admin" or payload.password != "admin":
@@ -40,7 +45,7 @@ async def upload_video(
     db.refresh(job)
 
     # Auto-enqueue right after upload so non-technical users see processing start immediately.
-    process_job.delay(job.id)
+    enqueue_job(job.id)
     return job
 
 
@@ -49,7 +54,7 @@ def run_job(job_id: int, db: Session = Depends(get_db), _user: str = Depends(req
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Not found")
-    process_job.delay(job_id)
+    enqueue_job(job_id)
     job.status = "queued"
     db.commit()
     db.refresh(job)

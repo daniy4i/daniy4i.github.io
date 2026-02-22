@@ -35,7 +35,14 @@ def _safe_conf(value: float) -> float:
     return max(0.0, min(1.0, round(float(value), 3)))
 
 
-@celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=5, retry_kwargs={"max_retries": 3})
+@celery_app.task(
+    bind=True,
+    name="app.workers.tasks.process_job",
+    queue="video",
+    autoretry_for=(Exception,),
+    retry_backoff=5,
+    retry_kwargs={"max_retries": 3},
+)
 def process_job(self, job_id: int):
     db = SessionLocal()
     job = db.get(Job, job_id)
