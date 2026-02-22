@@ -82,5 +82,6 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
   2. Retry with either `make do-it-all` or `make do_it_all`.
   3. Fallback (no Make required): `./scripts/do_it_all.sh`.
 - Apple Silicon note: YOLO/Ultralytics is installed only on `x86_64` containers to avoid PyTorch wheel issues on ARM; ARM builds still run with fallback analytics mode.
+- Dependency note: NumPy is pinned to `1.26.4` to stay compatible with both `opencv-python-headless` and `ultralytics` during image builds.
 - If YOLO weights cannot download, worker still emits congestion windows using fallback motion stats.
 - Verify MinIO endpoint and credentials in `.env`/compose.
