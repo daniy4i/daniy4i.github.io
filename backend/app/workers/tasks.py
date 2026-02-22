@@ -1,5 +1,6 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+import json
 import tempfile
 
 import cv2
@@ -10,12 +11,13 @@ from app.core.logging import logger
 from app.db.session import SessionLocal
 from app.ml.heuristics import bike_proximity_confidence, build_windows, close_following_confidence, congestion_score, cut_in_confidence
 from app.models.entities import AnalyticsWindow, Event, Job, Track
+from app.services.data_product import build_marketplace_payload, hash_payload
 from app.services.storage import download_file, upload_bytes
 from app.workers.celery_app import celery_app
 
 try:
     from ultralytics import YOLO
-except Exception:  # pragma: no cover - handled at runtime when ultralytics unavailable
+except Exception:  # pragma: no cover
     YOLO = None
 
 TARGET_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle", "person"}
@@ -23,7 +25,6 @@ VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
 
 
 def _blur_privacy(frame: np.ndarray) -> np.ndarray:
-    """Simple privacy blur for preview outputs."""
     h, _ = frame.shape[:2]
     roi = frame[int(h * 0.2): int(h * 0.8), :]
     frame[int(h * 0.2): int(h * 0.8), :] = cv2.GaussianBlur(roi, (21, 21), 20)
@@ -87,6 +88,7 @@ def process_job(self, job_id: int):
 
             if model:
                 result = model.track(frame, persist=True, verbose=False)[0]
+                annotated_frame = result.plot()
                 if result.boxes is not None:
                     boxes = result.boxes
                     ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
@@ -124,9 +126,6 @@ def process_job(self, job_id: int):
                             pts = np.array(history, dtype=np.int32).reshape((-1, 1, 2))
                             cv2.polylines(annotated_frame, [pts], isClosed=False, color=(220, 220, 220), thickness=2)
 
-                    annotated_frame = result.plot()
-
-            # Motion proxy from centroid movement between last two samples per track
             motions = []
             for points in per_track_points.values():
                 if len(points) >= 2 and abs(points[-1]["t"] - t) < (2 * sample_every / max(fps, 1)):
@@ -135,9 +134,12 @@ def process_job(self, job_id: int):
                     motions.append(float(np.hypot(dx, dy)))
             avg_motion = float(np.mean(motions)) if motions else 0.0
 
-            samples.append({"t": t, "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}), "motion": avg_motion})
+            samples.append({
+                "t": t,
+                "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}),
+                "motion": avg_motion,
+            })
 
-            # Preserve privacy in preview output
             annotated_frame = _blur_privacy(annotated_frame)
             writer.write(annotated_frame)
             frame_idx += 1
@@ -148,8 +150,7 @@ def process_job(self, job_id: int):
         db.query(Event).filter(Event.job_id == job_id).delete()
         db.query(Track).filter(Track.job_id == job_id).delete()
 
-        # Persist tracks + heuristic events
-        for track_id, pts in per_track_points.items():
+        for _, pts in per_track_points.items():
             if not pts:
                 continue
             class_name = pts[0]["class"]
@@ -179,12 +180,21 @@ def process_job(self, job_id: int):
                     db.add(Event(job_id=job_id, track_id=track.id, type="bike_proximity_lane_share_proxy", timestamp=pts[-1]["t"], confidence=bike_conf, details_json={"definition": "bicycle near ego-forward center"}))
 
         db.query(AnalyticsWindow).filter(AnalyticsWindow.job_id == job_id).delete()
+        analytics_rows = []
         for w in build_windows(samples, window_s=5):
+            score = congestion_score(w["active_tracks"], w["avg_motion"])
+            analytics_rows.append({
+                "t_start": w["t_start"],
+                "t_end": w["t_end"],
+                "active_tracks": w["active_tracks"],
+                "avg_motion": round(w["avg_motion"], 2),
+                "congestion_score": score,
+            })
             db.add(AnalyticsWindow(
                 job_id=job_id,
                 t_start=w["t_start"],
                 t_end=w["t_end"],
-                congestion_score=congestion_score(w["active_tracks"], w["avg_motion"]),
+                congestion_score=score,
                 counts_json={"active_tracks": w["active_tracks"]},
                 motion_json={"avg_motion": round(w["avg_motion"], 2)},
             ))
@@ -193,10 +203,37 @@ def process_job(self, job_id: int):
         with open(annotated_path, "rb") as f:
             upload_bytes(clip_key, f.read(), "video/mp4")
 
-        for event in db.scalars(select(Event).where(Event.job_id == job_id)).all():
+        events = db.scalars(select(Event).where(Event.job_id == job_id)).all()
+        for event in events:
             event.clip_key = clip_key
 
+        class_counts = Counter(track.class_name for track in db.scalars(select(Track).where(Track.job_id == job_id)).all())
+        event_counts = Counter(event.type for event in events)
+
+        marketplace_payload = build_marketplace_payload(
+            job_id=job_id,
+            filename=job.filename,
+            duration_s=job.duration_s or 0.0,
+            analytics_windows=analytics_rows,
+            event_counts=dict(event_counts),
+            class_counts=dict(class_counts),
+        )
+        payload_hash = hash_payload(marketplace_payload)
+        marketplace_payload["sha256"] = payload_hash
+
+        product_key = f"jobs/{job_id}/marketplace/product.json"
+        upload_bytes(product_key, json.dumps(marketplace_payload, separators=(",", ":")).encode("utf-8"), "application/json")
+
+        job.settings_json = {
+            **(job.settings_json or {}),
+            "marketplace_product_key": product_key,
+            "marketplace_product_sha256": payload_hash,
+        }
+
         job.status = "succeeded"
-        job.logs_summary = f"Processed with YOLOv8 tracking ({'enabled' if model else 'fallback mode'}), tracks={len(per_track_points)}, events={db.query(Event).filter(Event.job_id==job_id).count()}"
+        job.logs_summary = (
+            f"Processed with YOLOv8 tracking ({'enabled' if model else 'fallback mode'}), "
+            f"tracks={sum(class_counts.values())}, events={sum(event_counts.values())}, data_hash={payload_hash[:12]}..."
+        )
         db.commit()
-        logger.info("job.completed", job_id=job_id, events=db.query(Event).filter(Event.job_id==job_id).count())
+        logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), hash=payload_hash)

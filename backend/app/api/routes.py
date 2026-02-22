@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.entities import AnalyticsWindow, Event, Job
-from app.schemas.api import AnalyticsWindowOut, AuthIn, EventOut, JobOut, ReviewIn, TokenOut
+from app.schemas.api import AnalyticsWindowOut, AuthIn, DataProductOut, EventOut, JobOut, ReviewIn, TokenOut
 from app.services.auth import issue_token, require_user
 from app.services.storage import signed_url, upload_bytes
 from app.core.config import settings
@@ -94,3 +94,15 @@ def review(event_id: int, payload: ReviewIn, db: Session = Depends(get_db), _use
     db.commit()
     db.refresh(event)
     return event
+
+
+@router.get("/jobs/{job_id}/data_product", response_model=DataProductOut)
+def data_product(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+    payload_key = (job.settings_json or {}).get("marketplace_product_key")
+    payload_hash = (job.settings_json or {}).get("marketplace_product_sha256")
+    if not payload_key or not payload_hash:
+        raise HTTPException(status_code=404, detail="Data product not ready")
+    return DataProductOut(job_id=job_id, sha256=payload_hash, url=signed_url(payload_key))

@@ -54,3 +54,10 @@ class AuthIn(BaseModel):
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class DataProductOut(BaseModel):
+    job_id: int
+    sha256: str
+    url: str
+

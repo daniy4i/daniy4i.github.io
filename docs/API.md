@@ -21,3 +21,16 @@ Review payload:
   "review_notes": "optional"
 }
 ```
+
+
+## GET /api/jobs/{job_id}/data_product
+Returns a presigned URL for an anonymized aggregated data product plus its SHA-256 hash.
+
+Example response:
+```json
+{
+  "job_id": 42,
+  "sha256": "<hex>",
+  "url": "https://..."
+}
+```
