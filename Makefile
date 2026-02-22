@@ -1,4 +1,4 @@
-.PHONY: up down test backend worker frontend
+.PHONY: up down test backend worker frontend do-it-all check
 up:
 	docker compose -f infra/docker-compose.yml up --build
 
@@ -16,3 +16,9 @@ frontend:
 
 test:
 	cd backend && pytest -q
+
+do-it-all:
+	./scripts/do_it_all.sh
+
+check:
+	./scripts/check_stack.sh
