@@ -4,28 +4,28 @@ export default function Home() {
   return (
     <main className="stack">
       <section className="card hero">
-        <h1>Traffic intelligence for safer city operations</h1>
+        <h1>Neon-grade traffic intelligence for modern city operations</h1>
         <p>
-          Upload dashcam video, run event detection jobs, and review congestion and traffic behavior trends in one dashboard.
+          Upload dashcam footage, run YOLO-based tracking jobs, and transform behavior/congestion signals into powerful operational insights.
         </p>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <Link href="/upload"><button>Upload Video</button></Link>
-          <Link href="/jobs"><button className="secondary">View Jobs</button></Link>
+        <div className="hero-actions">
+          <Link href="/upload" className="btn btn-primary">Upload Video</Link>
+          <Link href="/jobs" className="btn btn-secondary">Open Jobs Dashboard</Link>
         </div>
       </section>
 
       <section className="grid cols-3">
         <article className="card">
-          <h3>1. Ingest</h3>
-          <p className="muted">Secure upload with file type and size checks.</p>
+          <h3>Realtime Detection</h3>
+          <p className="muted">YOLO tracking with stable IDs and confidence-scored behavior events.</p>
         </article>
         <article className="card">
-          <h3>2. Process</h3>
-          <p className="muted">Asynchronous analysis jobs with progress + retries.</p>
+          <h3>Async Processing</h3>
+          <p className="muted">Reliable queue-based video processing with logs and retries.</p>
         </article>
         <article className="card">
-          <h3>3. Review</h3>
-          <p className="muted">Explore events, confidence scores, and congestion trends.</p>
+          <h3>Data Product Layer</h3>
+          <p className="muted">Anonymized aggregate traffic analytics with SHA-256 integrity hash.</p>
         </article>
       </section>
     </main>

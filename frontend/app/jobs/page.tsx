@@ -26,16 +26,19 @@ export default function JobsPage() {
   return (
     <main className="stack">
       <section className="card">
-        <h2>Processing jobs</h2>
+        <h2>Processing Jobs</h2>
+        <p className="muted">Track every uploaded video from queue to analytics review.</p>
         {error && <p className="error">{error}</p>}
         <div className="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Status</th><th>File</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>Status</th><th>File</th></tr>
+            </thead>
             <tbody>
               {jobs.map((j) => (
                 <tr key={j.id}>
-                  <td><Link href={`/jobs/${j.id}`}>{j.id}</Link></td>
-                  <td>{j.status}</td>
+                  <td><Link href={`/jobs/${j.id}`} className="btn btn-secondary" style={{ padding: "6px 10px" }}>{j.id}</Link></td>
+                  <td><span className={`tag ${j.status}`}>{j.status}</span></td>
                   <td>{j.filename}</td>
                 </tr>
               ))}

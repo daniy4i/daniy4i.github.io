@@ -14,11 +14,11 @@ export default function UploadPage() {
       const r = await apiFetch("/videos/upload", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
-        body: form
+        body: form,
       });
       const data = await parseJsonSafe(r);
       if (!r.ok) throw new Error(data?.detail || `Upload failed (${r.status})`);
-      setMsg(`Uploaded job #${data.id}. Go to Jobs page to run/review.`);
+      setMsg(`Uploaded job #${data.id}. Open Jobs to run/review analytics.`);
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "Upload failed");
     }
@@ -27,11 +27,11 @@ export default function UploadPage() {
   return (
     <main className="stack">
       <section className="card">
-        <h2>Upload dashcam video</h2>
-        <p className="muted">Supported: MP4, MOV, MKV. Max upload size is configured on backend.</p>
-        <form onSubmit={onSubmit} className="stack" style={{ maxWidth: 560 }}>
+        <h2>Upload Dashcam Video</h2>
+        <p className="muted">Formats: MP4 / MOV / MKV. Upload starts secure processing for tracked traffic analytics.</p>
+        <form onSubmit={onSubmit} className="stack" style={{ maxWidth: 640 }}>
           <input type="file" name="file" accept="video/mp4,video/quicktime,video/x-matroska" required />
-          <button type="submit">Upload</button>
+          <button type="submit" className="btn btn-primary">Upload & Create Job</button>
         </form>
         {msg && <p className={msg.toLowerCase().includes("uploaded") ? "success" : "error"}>{msg}</p>}
       </section>
