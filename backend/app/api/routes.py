@@ -34,10 +34,13 @@ async def upload_video(
         raise HTTPException(status_code=400, detail="File too large")
     key = f"jobs/raw/{file.filename}"
     upload_bytes(key, payload, file.content_type or "video/mp4")
-    job = Job(filename=file.filename, storage_key=key, settings_json={"fps_sampled": settings.fps_sampled})
+    job = Job(filename=file.filename, status="queued", storage_key=key, settings_json={"fps_sampled": settings.fps_sampled})
     db.add(job)
     db.commit()
     db.refresh(job)
+
+    # Auto-enqueue right after upload so non-technical users see processing start immediately.
+    process_job.delay(job.id)
     return job
 
 
