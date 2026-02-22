@@ -4,6 +4,15 @@ NYC Traffic Intelligence is a web app that lets you upload dashcam videos and re
 
 ## If you don’t code (recommended)
 
+
+### 0) Make sure you are on the updated repo
+From this project folder run:
+```bash
+git pull
+git log -1 --oneline
+```
+You should see the latest commit at the top.
+
 ### 1) Install Docker Desktop
 - Download: https://www.docker.com/products/docker-desktop/
 - Open Docker Desktop and wait until it says it is running.
@@ -69,6 +78,12 @@ curl -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/
 curl -X GET http://localhost:8000/api/jobs -H "Authorization: Bearer <token>"
 curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' -d '{"review_status":"confirm","review_notes":"looks valid"}'
 ```
+
+
+### Processing engine
+- Uses YOLOv8 `model.track(..., persist=True)` for tracked detections (vehicle, bicycle, person classes).
+- Writes a privacy-blurred annotated preview video and links it to detected events.
+- Computes congestion windows and behavior proxy events from tracked trajectories.
 
 ## Privacy model
 - Preview outputs use blur transforms for privacy.
