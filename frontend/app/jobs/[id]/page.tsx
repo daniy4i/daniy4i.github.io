@@ -8,6 +8,8 @@ export default function JobDetail({ params }: { params: { id: string } }) {
   const [events, setEvents] = useState<any[]>([]);
   const [analytics, setAnalytics] = useState<any[]>([]);
   const [artifacts, setArtifacts] = useState<any[]>([]);
+  const [clips, setClips] = useState<any[]>([]);
+  const [clipFilter, setClipFilter] = useState<string>("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [error, setError] = useState("");
 
@@ -16,15 +18,17 @@ export default function JobDetail({ params }: { params: { id: string } }) {
       try {
         const token = await login();
         const headers = { Authorization: `Bearer ${token}` };
-        const [jobResp, eventsResp, analyticsResp, artifactsResp, previewResp] = await Promise.all([
+        const clipQ = clipFilter ? `?clip_id=${encodeURIComponent(clipFilter)}` : "";
+        const [jobResp, eventsResp, analyticsResp, artifactsResp, clipsResp, previewResp] = await Promise.all([
           apiFetch(`/jobs/${params.id}`, { headers }),
-          apiFetch(`/jobs/${params.id}/events`, { headers }),
-          apiFetch(`/jobs/${params.id}/analytics`, { headers }),
+          apiFetch(`/jobs/${params.id}/events${clipQ}`, { headers }),
+          apiFetch(`/jobs/${params.id}/analytics${clipQ}`, { headers }),
           apiFetch(`/jobs/${params.id}/artifacts`, { headers }),
+          apiFetch(`/jobs/${params.id}/clips`, { headers }),
           apiFetch(`/jobs/${params.id}/artifacts/preview_tracking.mp4`, { headers }),
         ]);
-        const [jobData, eventsData, analyticsData, artifactsData, previewData] = await Promise.all([
-          parseJsonSafe(jobResp), parseJsonSafe(eventsResp), parseJsonSafe(analyticsResp), parseJsonSafe(artifactsResp), parseJsonSafe(previewResp),
+        const [jobData, eventsData, analyticsData, artifactsData, clipsData, previewData] = await Promise.all([
+          parseJsonSafe(jobResp), parseJsonSafe(eventsResp), parseJsonSafe(analyticsResp), parseJsonSafe(artifactsResp), parseJsonSafe(clipsResp), parseJsonSafe(previewResp),
         ]);
         if (!jobResp.ok) throw new Error(jobData?.detail || `Failed to load job (${jobResp.status})`);
         if (!eventsResp.ok) throw new Error(eventsData?.detail || `Failed to load events (${eventsResp.status})`);
@@ -33,12 +37,13 @@ export default function JobDetail({ params }: { params: { id: string } }) {
         setEvents(eventsData || []);
         setAnalytics(analyticsData || []);
         setArtifacts(artifactsData?.artifacts || []);
+        setClips(clipsData?.clips || []);
         if (previewResp.ok) setPreviewUrl(previewData?.url || "");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load job details");
       }
     })();
-  }, [params.id]);
+  }, [params.id, clipFilter]);
 
   const eventsByType = Object.entries(events.reduce((acc, e) => {
     acc[e.type] = (acc[e.type] || 0) + 1;
@@ -68,6 +73,13 @@ export default function JobDetail({ params }: { params: { id: string } }) {
         <h2>Job {params.id}</h2>
         <p className="muted">Status: {job?.status || "..."} • Duration: {job?.duration_s ?? 0}s</p>
         <p className="muted">Analytics windows: {analytics.length} • Events: {events.length}</p>
+        <label className="muted">Clip filter:&nbsp;
+          <select value={clipFilter} onChange={(e) => setClipFilter(e.target.value)}>
+            <option value="">All clips</option>
+            {clips.map((c) => <option key={c.clip_id} value={c.clip_id}>{c.clip_id}</option>)}
+          </select>
+        </label>
+        {clips.length > 0 && <p className="muted">Clips: {clips.map((c) => c.clip_id).join(", ")}</p>}
         {error && <p className="error">{error}</p>}
       </section>
 

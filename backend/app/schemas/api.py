@@ -18,6 +18,7 @@ class JobOut(BaseModel):
 class EventOut(BaseModel):
     id: int
     job_id: int
+    clip_id: str | None = None
     track_id: int | None
     type: str
     timestamp: float
@@ -31,6 +32,7 @@ class EventOut(BaseModel):
 
 
 class AnalyticsWindowOut(BaseModel):
+    clip_id: str | None = None
     t_start: float
     t_end: float
     congestion_score: float

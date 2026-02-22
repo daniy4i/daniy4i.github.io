@@ -28,9 +28,9 @@ export default function UploadPage() {
     <main className="stack">
       <section className="card">
         <h2>Upload Dashcam Video</h2>
-        <p className="muted">Formats: MP4 / MOV / MKV. Upload starts secure processing for tracked traffic analytics.</p>
+        <p className="muted">Formats: MP4 / MOV / MKV or ZIP of clips. Upload starts secure processing for tracked traffic analytics.</p>
         <form onSubmit={onSubmit} className="stack" style={{ maxWidth: 640 }}>
-          <input type="file" name="file" accept="video/mp4,video/quicktime,video/x-matroska" required />
+          <input type="file" name="file" accept="video/mp4,video/quicktime,video/x-matroska,.zip,application/zip" required />
           <button type="submit" className="btn btn-primary">Upload & Create Job</button>
         </form>
         {msg && <p className={msg.toLowerCase().includes("uploaded") ? "success" : "error"}>{msg}</p>}

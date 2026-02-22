@@ -30,7 +30,7 @@ make do-it-all
 
 ### 4) Use it
 1. Open `http://localhost:3000/upload`
-2. Upload your dashcam video (`.mp4`, `.mov`, `.mkv`)
+2. Upload either a single video (`.mp4`, `.mov`, `.mkv`) or a ZIP of multiple clips
 3. Go to `Jobs`
 4. Open a job
 5. If processing does not start automatically, open API docs and call `POST /api/jobs/{job_id}/run`
@@ -85,6 +85,8 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
 - Writes a privacy-blurred annotated preview video and links it to detected events.
 - Standardizes job artifacts under `jobs/{job_id}/artifacts/*`:
   `job_summary.json`, `preview_tracking.mp4`, `events.jsonl`, `tracks.jsonl`, `windows.parquet` (and `windows.csv`).
+- Batch mode: one ZIP upload creates one job, processes each clip, and merges into unified events/tracks/windows with `clip_id`.
+- Original input clips are stored as artifacts under `jobs/{job_id}/inputs/{clip_id}.mp4`.
 - Data Pack v1 exports include CSV/JSONL/Parquet variants plus `data_pack_v1.zip`, each with SHA-256 in the artifact manifest.
 - Computes congestion windows and behavior proxy events from tracked trajectories.
 - Uses ego-motion compensation (global frame motion subtraction) so speed/stopped proxies are less biased by dashcam movement.

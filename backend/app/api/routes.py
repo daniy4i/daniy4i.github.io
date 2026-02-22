@@ -33,7 +33,8 @@ async def upload_video(
     _user: str = Depends(require_user),
 ):
     ext = Path(file.filename).suffix.lower().replace(".", "")
-    if ext not in settings.allowed_extensions.split(","):
+    allowed = {e.strip() for e in settings.allowed_extensions.split(",") if e.strip()} | {"zip"}
+    if ext not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported format")
     payload = await file.read()
     if len(payload) > settings.upload_max_mb * 1024 * 1024:
@@ -76,13 +77,30 @@ def job_detail(job_id: int, db: Session = Depends(get_db), _user: str = Depends(
 
 
 @router.get("/jobs/{job_id}/events", response_model=list[EventOut])
-def events(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
-    return db.scalars(select(Event).where(Event.job_id == job_id).order_by(Event.timestamp)).all()
+def events(job_id: int, clip_id: str | None = Query(default=None), db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    stmt = select(Event).where(Event.job_id == job_id)
+    if clip_id:
+        stmt = stmt.where(Event.clip_id == clip_id)
+    return db.scalars(stmt.order_by(Event.timestamp)).all()
 
 
 @router.get("/jobs/{job_id}/analytics", response_model=list[AnalyticsWindowOut])
-def analytics(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
-    return db.scalars(select(AnalyticsWindow).where(AnalyticsWindow.job_id == job_id).order_by(AnalyticsWindow.t_start)).all()
+def analytics(job_id: int, clip_id: str | None = Query(default=None), db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    stmt = select(AnalyticsWindow).where(AnalyticsWindow.job_id == job_id)
+    if clip_id:
+        stmt = stmt.where(AnalyticsWindow.clip_id == clip_id)
+    return db.scalars(stmt.order_by(AnalyticsWindow.t_start)).all()
+
+
+@router.get("/jobs/{job_id}/clips")
+def job_clips(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+    clips = (job.artifacts_json or {}).get("clips", [])
+    if not clips:
+        clips = [{"clip_id": c} for c in ((job.settings_json or {}).get("clips") or [])]
+    return {"job_id": job_id, "clips": clips}
 
 
 @router.get("/jobs/{job_id}/event_clip/{event_id}")

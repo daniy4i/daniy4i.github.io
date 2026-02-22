@@ -11,8 +11,8 @@
 ## Pipeline
 1. Upload endpoint stores video in object storage and creates job row.
 2. Run endpoint enqueues Celery task.
-3. Worker downloads video, samples frames, estimates ego/global motion between sampled frames, runs tracking, computes behavior proxies + compensated-motion congestion score.
-4. Event records and analytics windows are stored in PostgreSQL.
+3. Worker downloads one video OR extracts a ZIP of clips in a safe temp dir, samples frames, estimates ego/global motion between sampled frames, runs tracking, computes behavior proxies + compensated-motion congestion score.
+4. Event records and analytics windows are stored in PostgreSQL with `clip_id` for batch jobs.
 5. Dashboard reads APIs for visualization and reviewer workflow.
 
 ## Reliability

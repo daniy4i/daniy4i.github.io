@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from pathlib import Path
 import json
+import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -28,7 +29,10 @@ except Exception:  # pragma: no cover
 
 TARGET_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle", "person"}
 VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
 TRAIL_LENGTH = 20
+
+
 def _blur_privacy(frame: np.ndarray) -> np.ndarray:
     h, _ = frame.shape[:2]
     roi = frame[int(h * 0.2): int(h * 0.8), :]
@@ -38,6 +42,30 @@ def _blur_privacy(frame: np.ndarray) -> np.ndarray:
 
 def _safe_conf(value: float) -> float:
     return max(0.0, min(1.0, round(float(value), 3)))
+
+
+def _safe_name(name: str) -> str:
+    return "".join(c if c.isalnum() or c in {"_", "-", "."} else "_" for c in Path(name).name)
+
+
+def _extract_zip_inputs(zip_path: str, out_dir: str) -> list[tuple[str, str]]:
+    clips: list[tuple[str, str]] = []
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            raw_name = Path(info.filename)
+            if raw_name.is_absolute() or ".." in raw_name.parts:
+                continue
+            if raw_name.suffix.lower() not in VIDEO_EXTS:
+                continue
+            clip_id = _safe_name(raw_name.stem)[:48] or f"clip_{len(clips)+1}"
+            ext = raw_name.suffix.lower()
+            dst = Path(out_dir) / f"{clip_id}{ext}"
+            with zf.open(info) as src, open(dst, "wb") as out:
+                shutil.copyfileobj(src, out)
+            clips.append((clip_id, str(dst)))
+    return clips
 
 
 def _draw_detection(frame: np.ndarray, det: dict, trail: list[tuple[float, float]]) -> None:
@@ -55,22 +83,10 @@ def _draw_detection(frame: np.ndarray, det: dict, trail: list[tuple[float, float
 
 def _encode_preview_h264(src_path: str, out_path: str) -> None:
     cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        src_path,
-        "-vf",
-        "scale=-2:720,fps=15",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-b:v",
-        "2200k",
-        "-movflags",
-        "+faststart",
-        "-an",
-        out_path,
+        "ffmpeg", "-y", "-i", src_path,
+        "-vf", "scale=-2:720,fps=15",
+        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2200k",
+        "-movflags", "+faststart", "-an", out_path,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
 
@@ -93,7 +109,9 @@ def process_job(self, job_id: int):
     db.commit()
 
     with tempfile.TemporaryDirectory() as td:
-        src = str(Path(td) / "src.mp4")
+        src = str(Path(td) / "input")
+        Path(src).mkdir(parents=True, exist_ok=True)
+        raw_path = str(Path(td) / "source.bin")
         preview_raw_path = str(Path(td) / "preview_raw.mp4")
         preview_path = str(Path(td) / ARTIFACT_NAMES["preview"])
         summary_path = str(Path(td) / ARTIFACT_NAMES["summary"])
@@ -105,202 +123,224 @@ def process_job(self, job_id: int):
         windows_csv_path = str(Path(td) / ARTIFACT_NAMES["windows_csv"])
         datapack_zip_path = str(Path(td) / ARTIFACT_NAMES["data_pack_zip"])
 
-        download_file(job.storage_key, src)
+        download_file(job.storage_key, raw_path)
 
-        cap = cv2.VideoCapture(src)
-        if not cap.isOpened():
-            raise RuntimeError("Unable to open uploaded video")
+        ext = Path(job.filename).suffix.lower()
+        clip_sources: list[tuple[str, str]]
+        if ext == ".zip":
+            clip_sources = _extract_zip_inputs(raw_path, src)
+            if not clip_sources:
+                raise RuntimeError("ZIP contains no supported video clips")
+        elif ext in VIDEO_EXTS:
+            clip_id = _safe_name(Path(job.filename).stem)[:48] or "clip_1"
+            single = str(Path(src) / f"{clip_id}{ext}")
+            shutil.copy2(raw_path, single)
+            clip_sources = [(clip_id, single)]
+        else:
+            raise RuntimeError("Unsupported source format")
 
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-
-        sample_every = max(1, int(fps / max((job.settings_json or {}).get("fps_sampled", 5), 1)))
-        job.fps_sampled = int(round(fps / sample_every))
-        job.duration_s = total_frames / max(fps, 1)
+        # persist original clip inputs as artifacts
+        clip_manifest = []
+        for clip_id, clip_path in clip_sources:
+            clip_artifact_key = f"jobs/{job_id}/inputs/{clip_id}.mp4"
+            with open(clip_path, "rb") as f:
+                payload = f.read()
+            upload_bytes(clip_artifact_key, payload, "video/mp4")
+            clip_manifest.append({"clip_id": clip_id, "key": clip_artifact_key, "size_bytes": len(payload)})
 
         model = YOLO("yolov8n.pt") if YOLO else None
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(preview_raw_path, fourcc, max(1, job.fps_sampled), (frame_width, frame_height))
-
         samples: list[dict] = []
-        track_history: dict[int, list[tuple[float, float]]] = defaultdict(list)
-        per_track_points: dict[int, list[dict]] = defaultdict(list)
+        per_track_points: dict[str, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
+        clip_offset = 0.0
+        total_duration = 0.0
+        job_fps_sampled = max((job.settings_json or {}).get("fps_sampled", 5), 1)
 
-        frame_idx = 0
-        prev_sampled_frame = None
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
+        writer = None
+        output_size = None
 
-            if frame_idx % sample_every != 0:
-                frame_idx += 1
+        for clip_id, clip_path in clip_sources:
+            cap = cv2.VideoCapture(clip_path)
+            if not cap.isOpened():
                 continue
 
-            t = frame_idx / max(fps, 1)
-            global_dx, global_dy = estimate_global_motion(prev_sampled_frame, frame)
-            detections: list[dict] = []
-            annotated_frame = frame.copy()
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            total_duration += total_frames / max(fps, 1)
+            sample_every = max(1, int(fps / job_fps_sampled))
 
-            if model:
-                result = model.track(frame, persist=True, verbose=False)[0]
-                if result.boxes is not None and len(result.boxes):
-                    boxes = result.boxes
-                    ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
-                    xys = boxes.xywh.cpu().numpy()
-                    confs = boxes.conf.cpu().tolist() if boxes.conf is not None else [0.0] * len(boxes)
+            if writer is None:
+                output_size = (frame_width, frame_height)
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(preview_raw_path, fourcc, job_fps_sampled, output_size)
 
-                    for i, box in enumerate(boxes):
-                        cls_name = result.names[int(box.cls[0])]
-                        if cls_name not in TARGET_CLASSES:
-                            continue
+            frame_idx = 0
+            prev_sampled_frame = None
+            track_history: dict[int, list[tuple[float, float]]] = defaultdict(list)
 
-                        tid = ids[i] if i < len(ids) else None
-                        x, y, w, h = xys[i]
-                        area = float(max(1.0, w * h))
-                        area_ratio = area / float(max(1, frame_width * frame_height))
-                        track_id = int(tid) if tid is not None else -1
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                if frame_idx % sample_every != 0:
+                    frame_idx += 1
+                    continue
 
-                        det = {
-                            "class": cls_name,
-                            "track_id": track_id,
-                            "t": t,
-                            "xc": float(x),
-                            "yc": float(y),
-                            "w": float(w),
-                            "h": float(h),
-                            "conf": float(confs[i]),
-                            "area": area,
-                            "area_ratio": area_ratio,
-                        }
-                        detections.append(det)
+                t_local = frame_idx / max(fps, 1)
+                t = clip_offset + t_local
+                global_dx, global_dy = estimate_global_motion(prev_sampled_frame, frame)
+                detections: list[dict] = []
+                annotated = frame.copy()
 
-                        if track_id >= 0:
-                            per_track_points[track_id].append(det)
-                            history = track_history[track_id]
-                            history.append((float(x), float(y)))
-                            _draw_detection(annotated_frame, det, history)
+                if model:
+                    result = model.track(frame, persist=True, verbose=False)[0]
+                    if result.boxes is not None and len(result.boxes):
+                        boxes = result.boxes
+                        ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
+                        xys = boxes.xywh.cpu().numpy()
+                        confs = boxes.conf.cpu().tolist() if boxes.conf is not None else [0.0] * len(boxes)
+                        for i, box in enumerate(boxes):
+                            cls_name = result.names[int(box.cls[0])]
+                            if cls_name not in TARGET_CLASSES:
+                                continue
+                            tid = ids[i] if i < len(ids) else None
+                            x, y, w, h = xys[i]
+                            track_id = int(tid) if tid is not None else -1
+                            det = {
+                                "clip_id": clip_id,
+                                "class": cls_name,
+                                "track_id": track_id,
+                                "t": t,
+                                "xc": float(x),
+                                "yc": float(y),
+                                "w": float(w),
+                                "h": float(h),
+                                "conf": float(confs[i]),
+                                "area": float(max(1.0, w * h)),
+                                "area_ratio": float(max(1.0, w * h)) / float(max(1, frame_width * frame_height)),
+                            }
+                            detections.append(det)
+                            if track_id >= 0:
+                                per_track_points[clip_id][track_id].append(det)
+                                history = track_history[track_id]
+                                history.append((float(x), float(y)))
+                                _draw_detection(annotated, det, history)
 
-            raw_motions = []
-            comp_motions = []
-            for points in per_track_points.values():
-                if len(points) >= 2 and abs(points[-1]["t"] - t) < (2 * sample_every / max(fps, 1)):
-                    raw_dx = points[-1]["xc"] - points[-2]["xc"]
-                    raw_dy = points[-1]["yc"] - points[-2]["yc"]
-                    comp_dx = raw_dx - global_dx
-                    comp_dy = raw_dy - global_dy
-                    points[-1]["raw_dx"] = float(raw_dx)
-                    points[-1]["raw_dy"] = float(raw_dy)
-                    points[-1]["comp_dx"] = float(comp_dx)
-                    points[-1]["comp_dy"] = float(comp_dy)
-                    raw_motions.append(float(np.hypot(raw_dx, raw_dy)))
-                    comp_motions.append(float(np.hypot(comp_dx, comp_dy)))
-            avg_raw_motion = float(np.mean(raw_motions)) if raw_motions else 0.0
-            avg_comp_motion = float(np.mean(comp_motions)) if comp_motions else 0.0
+                raw_motions = []
+                comp_motions = []
+                for points in per_track_points[clip_id].values():
+                    if len(points) >= 2 and abs(points[-1]["t"] - t) < (2 * sample_every / max(fps, 1)):
+                        raw_dx = points[-1]["xc"] - points[-2]["xc"]
+                        raw_dy = points[-1]["yc"] - points[-2]["yc"]
+                        comp_dx = raw_dx - global_dx
+                        comp_dy = raw_dy - global_dy
+                        points[-1]["raw_dx"] = float(raw_dx)
+                        points[-1]["raw_dy"] = float(raw_dy)
+                        points[-1]["comp_dx"] = float(comp_dx)
+                        points[-1]["comp_dy"] = float(comp_dy)
+                        raw_motions.append(float(np.hypot(raw_dx, raw_dy)))
+                        comp_motions.append(float(np.hypot(comp_dx, comp_dy)))
 
-            samples.append({
-                "t": t,
-                "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}),
-                "raw_motion": avg_raw_motion,
-                "comp_motion": avg_comp_motion,
-                "global_dx": float(global_dx),
-                "global_dy": float(global_dy),
-            })
+                samples.append({
+                    "clip_id": clip_id,
+                    "t": t,
+                    "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}),
+                    "raw_motion": float(np.mean(raw_motions)) if raw_motions else 0.0,
+                    "comp_motion": float(np.mean(comp_motions)) if comp_motions else 0.0,
+                    "global_dx": float(global_dx),
+                    "global_dy": float(global_dy),
+                })
 
-            annotated_frame = _blur_privacy(annotated_frame)
-            writer.write(annotated_frame)
-            prev_sampled_frame = frame.copy()
-            frame_idx += 1
+                annotated = _blur_privacy(annotated)
+                if output_size and (annotated.shape[1], annotated.shape[0]) != output_size:
+                    annotated = cv2.resize(annotated, output_size)
+                writer.write(annotated)
+                prev_sampled_frame = frame.copy()
+                frame_idx += 1
 
-        cap.release()
+            cap.release()
+            clip_offset += total_frames / max(fps, 1)
+
+        if writer is None:
+            raise RuntimeError("No readable clips found")
         writer.release()
 
         _encode_preview_h264(preview_raw_path, preview_path)
 
         db.query(Event).filter(Event.job_id == job_id).delete()
         db.query(Track).filter(Track.job_id == job_id).delete()
+        db.query(AnalyticsWindow).filter(AnalyticsWindow.job_id == job_id).delete()
 
         track_rows_points: dict[int, list[dict]] = {}
-        for _, pts in per_track_points.items():
-            if not pts:
-                continue
-            class_name = pts[0]["class"]
-            track = Track(
-                job_id=job_id,
-                class_name=class_name,
-                start_t=pts[0]["t"],
-                end_t=pts[-1]["t"],
-                bbox_stats_json={"max_area": max(p["area"] for p in pts), "mean_area": float(np.mean([p["area"] for p in pts]))},
-                motion_stats_json={
-                    "points": len(pts),
-                    "avg_raw_speed": float(np.mean([np.hypot(p.get("raw_dx", 0.0), p.get("raw_dy", 0.0)) for p in pts])),
-                    "avg_compensated_speed": float(np.mean([np.hypot(p.get("comp_dx", 0.0), p.get("comp_dy", 0.0)) for p in pts])),
-                    "raw_displacement": {
-                        "dx": float(sum(p.get("raw_dx", 0.0) for p in pts)),
-                        "dy": float(sum(p.get("raw_dy", 0.0) for p in pts)),
+        for clip_id, tracks_map in per_track_points.items():
+            for _, pts in tracks_map.items():
+                if not pts:
+                    continue
+                class_name = pts[0]["class"]
+                track = Track(
+                    job_id=job_id,
+                    clip_id=clip_id,
+                    class_name=class_name,
+                    start_t=pts[0]["t"],
+                    end_t=pts[-1]["t"],
+                    bbox_stats_json={"max_area": max(p["area"] for p in pts), "mean_area": float(np.mean([p["area"] for p in pts]))},
+                    motion_stats_json={
+                        "points": len(pts),
+                        "avg_raw_speed": float(np.mean([np.hypot(p.get("raw_dx", 0.0), p.get("raw_dy", 0.0)) for p in pts])),
+                        "avg_compensated_speed": float(np.mean([np.hypot(p.get("comp_dx", 0.0), p.get("comp_dy", 0.0)) for p in pts])),
                     },
-                    "compensated_displacement": {
-                        "dx": float(sum(p.get("comp_dx", 0.0) for p in pts)),
-                        "dy": float(sum(p.get("comp_dy", 0.0) for p in pts)),
-                    },
-                },
-            )
-            db.add(track)
-            db.flush()
-            track_rows_points[track.id] = pts
+                )
+                db.add(track)
+                db.flush()
+                track_rows_points[track.id] = pts
 
-            if class_name in VEHICLE_CLASSES:
-                cut_conf = _safe_conf(cut_in_confidence(pts, frame_width))
-                if cut_conf > 0.2:
-                    db.add(Event(job_id=job_id, track_id=track.id, type="cut_in", timestamp=pts[-1]["t"], confidence=cut_conf, details_json={"definition": "central zone crossing + fast area growth"}))
+                if class_name in VEHICLE_CLASSES:
+                    cut_conf = _safe_conf(cut_in_confidence(pts, output_size[0] if output_size else 1280))
+                    if cut_conf > 0.2:
+                        db.add(Event(job_id=job_id, clip_id=clip_id, track_id=track.id, type="cut_in", timestamp=pts[-1]["t"], confidence=cut_conf, details_json={"definition": "central zone crossing + fast area growth"}))
 
-                close_conf = _safe_conf(close_following_confidence(pts, frame_width))
-                if close_conf > 0.2:
-                    db.add(Event(job_id=job_id, track_id=track.id, type="close_following_proxy", timestamp=pts[-1]["t"], confidence=close_conf, details_json={"definition": "large centered bbox sustained"}))
+                    close_conf = _safe_conf(close_following_confidence(pts, output_size[0] if output_size else 1280))
+                    if close_conf > 0.2:
+                        db.add(Event(job_id=job_id, clip_id=clip_id, track_id=track.id, type="close_following_proxy", timestamp=pts[-1]["t"], confidence=close_conf, details_json={"definition": "large centered bbox sustained"}))
 
-            if class_name == "bicycle":
-                bike_conf = _safe_conf(bike_proximity_confidence(pts, frame_width))
-                if bike_conf > 0.2:
-                    db.add(Event(job_id=job_id, track_id=track.id, type="bike_proximity_lane_share_proxy", timestamp=pts[-1]["t"], confidence=bike_conf, details_json={"definition": "bicycle near ego-forward center"}))
+                if class_name == "bicycle":
+                    bike_conf = _safe_conf(bike_proximity_confidence(pts, output_size[0] if output_size else 1280))
+                    if bike_conf > 0.2:
+                        db.add(Event(job_id=job_id, clip_id=clip_id, track_id=track.id, type="bike_proximity_lane_share_proxy", timestamp=pts[-1]["t"], confidence=bike_conf, details_json={"definition": "bicycle near ego-forward center"}))
 
-        db.query(AnalyticsWindow).filter(AnalyticsWindow.job_id == job_id).delete()
         analytics_rows = []
-        for w in build_windows(samples, window_s=5):
-            score = congestion_score(
-                w["active_tracks"],
-                w["avg_compensated_speed"],
-                w["stopped_ratio"],
-                w["density_index"],
-            )
-            analytics_rows.append({
-                "datapack_version": DATAPACK_VERSION,
-                "t_start": w["t_start"],
-                "t_end": w["t_end"],
-                "active_tracks": w["active_tracks"],
-                "avg_raw_speed": round(w["avg_raw_speed"], 3),
-                "avg_compensated_speed": round(w["avg_compensated_speed"], 3),
-                "avg_speed_proxy": round(w["avg_speed_proxy"], 3),
-                "stopped_ratio": round(w["stopped_ratio"], 3),
-                "density_index": round(w["density_index"], 3),
-                "congestion_score": score,
-            })
-            db.add(AnalyticsWindow(
-                job_id=job_id,
-                t_start=w["t_start"],
-                t_end=w["t_end"],
-                congestion_score=score,
-                counts_json={"active_tracks": w["active_tracks"]},
-                motion_json={
+        samples_by_clip: dict[str, list[dict]] = defaultdict(list)
+        for s in samples:
+            samples_by_clip[s["clip_id"]].append(s)
+
+        for clip_id, clip_samples in samples_by_clip.items():
+            for w in build_windows(clip_samples, window_s=5):
+                score = congestion_score(w["active_tracks"], w["avg_compensated_speed"], w["stopped_ratio"], w["density_index"])
+                row = {
+                    "datapack_version": DATAPACK_VERSION,
+                    "clip_id": clip_id,
+                    "t_start": w["t_start"],
+                    "t_end": w["t_end"],
+                    "active_tracks": w["active_tracks"],
                     "avg_raw_speed": round(w["avg_raw_speed"], 3),
                     "avg_compensated_speed": round(w["avg_compensated_speed"], 3),
                     "avg_speed_proxy": round(w["avg_speed_proxy"], 3),
                     "stopped_ratio": round(w["stopped_ratio"], 3),
                     "density_index": round(w["density_index"], 3),
-                },
-            ))
+                    "congestion_score": score,
+                }
+                analytics_rows.append(row)
+                db.add(AnalyticsWindow(
+                    job_id=job_id,
+                    clip_id=clip_id,
+                    t_start=w["t_start"],
+                    t_end=w["t_end"],
+                    congestion_score=score,
+                    counts_json={"active_tracks": w["active_tracks"]},
+                    motion_json={k: row[k] for k in ["avg_raw_speed", "avg_compensated_speed", "avg_speed_proxy", "stopped_ratio", "density_index"]},
+                ))
 
         events = db.scalars(select(Event).where(Event.job_id == job_id)).all()
         tracks = db.scalars(select(Track).where(Track.job_id == job_id)).all()
@@ -314,6 +354,7 @@ def process_job(self, job_id: int):
             for event in events:
                 row = {
                     "datapack_version": DATAPACK_VERSION,
+                    "clip_id": event.clip_id,
                     "id": event.id,
                     "track_id": event.track_id,
                     "type": event.type,
@@ -327,57 +368,48 @@ def process_job(self, job_id: int):
                     raise RuntimeError("Data pack event export contains plate-like keys")
                 f.write(json.dumps(row) + "\n")
 
-        events_df = pd.DataFrame([
-            {
-                "datapack_version": DATAPACK_VERSION,
-                "event_id": event.id,
-                "type": event.type,
-                "timestamp": event.timestamp,
-                "confidence": event.confidence,
-                "track_id": event.track_id,
-                "details_json": json.dumps(event.details_json),
-                "clip_key": event.clip_key,
-                "review_status": event.review_status,
-            }
-            for event in events
-        ])
-        events_df.to_csv(events_csv_path, index=False)
+        pd.DataFrame([{
+            "datapack_version": DATAPACK_VERSION,
+            "clip_id": e.clip_id,
+            "event_id": e.id,
+            "type": e.type,
+            "timestamp": e.timestamp,
+            "confidence": e.confidence,
+            "track_id": e.track_id,
+            "details_json": json.dumps(e.details_json),
+            "clip_key": e.clip_key,
+            "review_status": e.review_status,
+        } for e in events]).to_csv(events_csv_path, index=False)
 
         with open(tracks_path, "w", encoding="utf-8") as f:
             for track in tracks:
                 points = track_rows_points.get(track.id) or []
-                sampled_traj = [{"t": p["t"], "x": p["xc"], "y": p["yc"]} for p in points[:: max(1, len(points) // 20 or 1)]]
+                sampled = [{"t": p["t"], "x": p["xc"], "y": p["yc"]} for p in points[:: max(1, len(points) // 20 or 1)]]
                 row = {
                     "datapack_version": DATAPACK_VERSION,
+                    "clip_id": track.clip_id,
                     "id": track.id,
                     "class": track.class_name,
                     "start_t": track.start_t,
                     "end_t": track.end_t,
                     "bbox_stats": track.bbox_stats_json,
                     "motion_stats": track.motion_stats_json,
-                    "trajectory_sampled": sampled_traj,
+                    "trajectory_sampled": sampled,
                 }
                 if contains_plate_like_keys(row):
                     raise RuntimeError("Data pack track export contains plate-like keys")
                 f.write(json.dumps(row) + "\n")
 
-        tracks_df = pd.DataFrame([
-            {
-                "datapack_version": DATAPACK_VERSION,
-                "track_id": track.id,
-                "class": track.class_name,
-                "start_t": track.start_t,
-                "end_t": track.end_t,
-                "bbox_stats_json": json.dumps(track.bbox_stats_json),
-                "motion_stats_json": json.dumps(track.motion_stats_json),
-                "trajectory_sampled": json.dumps([
-                    {"t": p["t"], "x": p["xc"], "y": p["yc"]}
-                    for p in (track_rows_points.get(track.id) or [])[:: max(1, (len(track_rows_points.get(track.id) or []) // 20) or 1)]
-                ]),
-            }
-            for track in tracks
-        ])
-        tracks_df.to_csv(tracks_csv_path, index=False)
+        pd.DataFrame([{
+            "datapack_version": DATAPACK_VERSION,
+            "clip_id": t.clip_id,
+            "track_id": t.id,
+            "class": t.class_name,
+            "start_t": t.start_t,
+            "end_t": t.end_t,
+            "bbox_stats_json": json.dumps(t.bbox_stats_json),
+            "motion_stats_json": json.dumps(t.motion_stats_json),
+        } for t in tracks]).to_csv(tracks_csv_path, index=False)
 
         windows_df = pd.DataFrame(analytics_rows)
         windows_df.to_parquet(windows_parquet_path, index=False)
@@ -387,8 +419,9 @@ def process_job(self, job_id: int):
             "datapack_version": DATAPACK_VERSION,
             "job_id": job_id,
             "status": "succeeded",
-            "duration_s": job.duration_s,
-            "fps_sampled": job.fps_sampled,
+            "duration_s": total_duration,
+            "fps_sampled": job_fps_sampled,
+            "clips": [c[0] for c in clip_sources],
             "settings": job.settings_json or {},
             "privacy": {"contains_identifiers": False, "contains_raw_plates": False},
             "tracks_total": int(sum(class_counts.values())),
@@ -397,23 +430,14 @@ def process_job(self, job_id: int):
             "event_counts": dict(event_counts),
             "windows_total": int(len(analytics_rows)),
         }
-
-        if contains_plate_like_keys(analytics_rows):
-            raise RuntimeError("Data pack windows export contains plate-like keys")
-
         if contains_plate_like_keys(summary_payload):
             raise RuntimeError("Data pack contains plate-like keys")
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary_payload, f, indent=2)
 
         with zipfile.ZipFile(datapack_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.write(summary_path, arcname=ARTIFACT_NAMES["summary"])
-            zf.write(windows_parquet_path, arcname=ARTIFACT_NAMES["windows_parquet"])
-            zf.write(windows_csv_path, arcname=ARTIFACT_NAMES["windows_csv"])
-            zf.write(events_path, arcname=ARTIFACT_NAMES["events"])
-            zf.write(events_csv_path, arcname=ARTIFACT_NAMES["events_csv"])
-            zf.write(tracks_path, arcname=ARTIFACT_NAMES["tracks"])
-            zf.write(tracks_csv_path, arcname=ARTIFACT_NAMES["tracks_csv"])
+            for p in [summary_path, windows_parquet_path, windows_csv_path, events_path, events_csv_path, tracks_path, tracks_csv_path]:
+                zf.write(p, arcname=Path(p).name)
 
         artifacts = [
             (ARTIFACT_NAMES["summary"], summary_path, "application/json"),
@@ -436,29 +460,30 @@ def process_job(self, job_id: int):
         marketplace_payload = build_marketplace_payload(
             job_id=job_id,
             filename=job.filename,
-            duration_s=job.duration_s or 0.0,
+            duration_s=total_duration,
             analytics_windows=analytics_rows,
             event_counts=dict(event_counts),
             class_counts=dict(class_counts),
         )
         payload_hash = hash_payload(marketplace_payload)
         marketplace_payload["sha256"] = payload_hash
-
         product_key = f"jobs/{job_id}/marketplace/product.json"
         upload_bytes(product_key, json.dumps(marketplace_payload, separators=(",", ":")).encode("utf-8"), "application/json")
 
+        job.duration_s = total_duration
+        job.fps_sampled = job_fps_sampled
         job.settings_json = {
             **(job.settings_json or {}),
             "preview_clip_key": artifact_key(job_id, ARTIFACT_NAMES["preview"]),
             "marketplace_product_key": product_key,
             "marketplace_product_sha256": payload_hash,
+            "clips": [c[0] for c in clip_sources],
         }
-        job.artifacts_json = {"artifacts": artifact_manifest}
-
+        job.artifacts_json = {"artifacts": artifact_manifest, "clips": clip_manifest}
         job.status = "succeeded"
         job.logs_summary = (
-            f"Processed with YOLOv8 tracking ({'enabled' if model else 'fallback mode'}), "
+            f"Processed {len(clip_sources)} clip(s) with YOLO tracking ({'enabled' if model else 'fallback mode'}), "
             f"tracks={sum(class_counts.values())}, events={sum(event_counts.values())}, artifacts={len(artifact_manifest)}"
         )
         db.commit()
-        logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), artifacts=len(artifact_manifest))
+        logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), artifacts=len(artifact_manifest), clips=len(clip_sources))
