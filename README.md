@@ -77,5 +77,9 @@ curl -X POST http://localhost:8000/api/events/1/review -H "Authorization: Bearer
 
 ## Troubleshooting
 - Ensure Docker daemon is running.
+- If you get `make: *** No rule to make target \`do-it-all\``:
+  1. Run `git pull` to get the latest `Makefile` and `scripts/` folder.
+  2. Retry with either `make do-it-all` or `make do_it_all`.
+  3. Fallback (no Make required): `./scripts/do_it_all.sh`.
 - If YOLO weights cannot download, worker still emits congestion windows using fallback motion stats.
 - Verify MinIO endpoint and credentials in `.env`/compose.
