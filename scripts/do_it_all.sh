@@ -31,7 +31,17 @@ for i in {1..60}; do
   fi
   sleep 2
   if [ "$i" -eq 60 ]; then
-    echo "❌ Backend did not become healthy in time. Check logs with: docker compose -f infra/docker-compose.yml logs backend"
+    echo "❌ Backend did not become healthy in time."
+    echo "
+Container status:"
+    docker compose -f infra/docker-compose.yml ps
+    echo "
+Last backend logs:"
+    docker compose -f infra/docker-compose.yml logs backend --tail=120 || true
+    echo "
+Tips:"
+    echo "- Retry: docker compose -f infra/docker-compose.yml restart backend"
+    echo "- Follow logs: docker compose -f infra/docker-compose.yml logs -f backend"
     exit 1
   fi
 done
