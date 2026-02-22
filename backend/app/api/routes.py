@@ -92,6 +92,19 @@ def event_clip(job_id: int, event_id: int, db: Session = Depends(get_db), _user:
     return {"url": signed_url(event.clip_key)}
 
 
+@router.get("/jobs/{job_id}/preview")
+def job_preview(job_id: int, db: Session = Depends(get_db), _user: str = Depends(require_user)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    preview_key = (job.settings_json or {}).get("preview_clip_key")
+    if not preview_key:
+        preview_key = f"jobs/{job_id}/clips/annotated_preview.mp4"
+
+    return {"url": signed_url(preview_key)}
+
+
 @router.post("/events/{event_id}/review", response_model=EventOut)
 def review(event_id: int, payload: ReviewIn, db: Session = Depends(get_db), _user: str = Depends(require_user)):
     event = db.get(Event, event_id)

@@ -233,6 +233,7 @@ def process_job(self, job_id: int):
 
         job.settings_json = {
             **(job.settings_json or {}),
+            "preview_clip_key": clip_key,
             "marketplace_product_key": product_key,
             "marketplace_product_sha256": payload_hash,
         }
