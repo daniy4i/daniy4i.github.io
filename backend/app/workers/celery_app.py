@@ -7,9 +7,13 @@ celery_app = Celery(
     backend=settings.redis_url,
     include=["app.workers.tasks"],
 )
-celery_app.conf.task_routes = {"app.workers.tasks.process_job": {"queue": "video"}}
+
+celery_app.conf.task_routes = {
+    "app.workers.tasks.process_job": {"queue": "video"}
+}
 celery_app.conf.task_default_queue = "video"
 celery_app.conf.task_acks_late = True
 celery_app.conf.worker_prefetch_multiplier = 1
 
+# Silence Celery startup warning (recommended for Redis)
 celery_app.conf.broker_connection_retry_on_startup = True
