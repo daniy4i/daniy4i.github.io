@@ -34,6 +34,10 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
 TRAIL_LENGTH = 20
 
 
+class PrivacyValidationError(RuntimeError):
+    """Raised when privacy validation fails for export payloads."""
+
+
 def _blur_privacy(frame: np.ndarray) -> np.ndarray:
     h, _ = frame.shape[:2]
     roi = frame[int(h * 0.2): int(h * 0.8), :]
@@ -97,6 +101,7 @@ def _encode_preview_h264(src_path: str, out_path: str) -> None:
     name="app.workers.tasks.process_job",
     queue="video",
     autoretry_for=(Exception,),
+    dont_autoretry_for=(PrivacyValidationError,),
     retry_backoff=5,
     retry_kwargs={"max_retries": 3},
 )
@@ -366,7 +371,12 @@ def process_job(self, job_id: int):
                     "review_status": event.review_status,
                 }
                 if contains_plate_like_keys(row):
-                    raise RuntimeError("Data pack event export contains plate-like keys")
+                    msg = "Data pack event export contains plate-like keys"
+                    job.status = "failed"
+                    job.logs_summary = f"Privacy validation failed: {msg}"
+                    db.commit()
+                    logger.error("job.failed.privacy_validation", job_id=job_id, error=msg)
+                    raise PrivacyValidationError(msg)
                 f.write(json.dumps(row) + "\n")
 
         pd.DataFrame([{
@@ -398,7 +408,12 @@ def process_job(self, job_id: int):
                     "trajectory_sampled": sampled,
                 }
                 if contains_plate_like_keys(row):
-                    raise RuntimeError("Data pack track export contains plate-like keys")
+                    msg = "Data pack track export contains plate-like keys"
+                    job.status = "failed"
+                    job.logs_summary = f"Privacy validation failed: {msg}"
+                    db.commit()
+                    logger.error("job.failed.privacy_validation", job_id=job_id, error=msg)
+                    raise PrivacyValidationError(msg)
                 f.write(json.dumps(row) + "\n")
 
         pd.DataFrame([{
@@ -432,7 +447,12 @@ def process_job(self, job_id: int):
             "windows_total": int(len(analytics_rows)),
         }
         if contains_plate_like_keys(summary_payload):
-            raise RuntimeError("Data pack contains plate-like keys")
+            msg = "Data pack contains plate-like keys"
+            job.status = "failed"
+            job.logs_summary = f"Privacy validation failed: {msg}"
+            db.commit()
+            logger.error("job.failed.privacy_validation", job_id=job_id, error=msg)
+            raise PrivacyValidationError(msg)
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary_payload, f, indent=2)
 
