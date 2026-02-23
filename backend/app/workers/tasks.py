@@ -14,7 +14,13 @@ from sqlalchemy import select
 from app.core.logging import logger
 from app.db.session import SessionLocal
 from app.ml.ego_motion import estimate_global_motion
-from app.ml.heuristics import bike_proximity_confidence, build_windows, close_following_confidence, congestion_score, cut_in_confidence
+from app.ml.heuristics import (
+    bike_proximity_confidence,
+    build_windows,
+    close_following_confidence,
+    congestion_score,
+    cut_in_confidence,
+)
 from app.models.entities import AnalyticsWindow, Event, Job, Track
 from app.services.data_product import build_marketplace_payload, hash_payload
 from app.services.storage import download_file, upload_bytes
@@ -25,6 +31,12 @@ from app.workers.celery_app import celery_app
 from app.workers.vision.annotate import annotate_frame
 from app.workers.vision.tracking import load_yolo_model, track_frame
 
+# Optional import (kept for diagnostics / compatibility)
+try:
+    from ultralytics import YOLO  # noqa: F401
+except Exception:  # pragma: no cover
+    YOLO = None
+
 TARGET_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle", "person"}
 VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
@@ -33,7 +45,6 @@ TRAIL_LENGTH = 20
 
 class PrivacyValidationError(RuntimeError):
     """Raised when privacy validation fails for export payloads."""
-
 
 
 def _safe_conf(value: float) -> float:
@@ -64,13 +75,24 @@ def _extract_zip_inputs(zip_path: str, out_dir: str) -> list[tuple[str, str]]:
     return clips
 
 
-
 def _encode_preview_h264(src_path: str, out_path: str) -> None:
     cmd = [
-        "ffmpeg", "-y", "-i", src_path,
-        "-vf", "scale=-2:720,fps=15",
-        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2200k",
-        "-movflags", "+faststart", "-an", out_path,
+        "ffmpeg",
+        "-y",
+        "-i",
+        src_path,
+        "-vf",
+        "scale=-2:720,fps=15",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-b:v",
+        "2200k",
+        "-movflags",
+        "+faststart",
+        "-an",
+        out_path,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
 
@@ -134,6 +156,8 @@ def process_job(self, job_id: int):
             clip_manifest.append({"clip_id": clip_id, "key": clip_artifact_key, "size_bytes": len(payload)})
 
         model = load_yolo_model("yolov8n.pt")
+        if model is None:
+            raise RuntimeError("YOLO model failed to load (ultralytics not installed or model unavailable)")
 
         samples: list[dict] = []
         per_track_points: dict[str, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
@@ -176,6 +200,7 @@ def process_job(self, job_id: int):
                 t_local = frame_idx / max(fps, 1)
                 t = clip_offset + t_local
                 global_dx, global_dy = estimate_global_motion(prev_sampled_frame, frame)
+
                 detections: list[dict] = track_frame(
                     model,
                     frame,
@@ -185,10 +210,16 @@ def process_job(self, job_id: int):
                     frame_height=frame_height,
                     target_classes=TARGET_CLASSES,
                 )
+
                 for det in detections:
                     track_id = det["track_id"]
                     if track_id >= 0:
                         per_track_points[clip_id][track_id].append(det)
+
+                        # maintain trails in pixel coords
+                        track_history[track_id].append((float(det["xc"]), float(det["yc"])))
+                        if len(track_history[track_id]) > (TRAIL_LENGTH * 3):
+                            track_history[track_id] = track_history[track_id][-(TRAIL_LENGTH * 3) :]
 
                 raw_motions = []
                 comp_motions = []
@@ -205,19 +236,23 @@ def process_job(self, job_id: int):
                         raw_motions.append(float(np.hypot(raw_dx, raw_dy)))
                         comp_motions.append(float(np.hypot(comp_dx, comp_dy)))
 
-                samples.append({
-                    "clip_id": clip_id,
-                    "t": t,
-                    "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}),
-                    "raw_motion": float(np.mean(raw_motions)) if raw_motions else 0.0,
-                    "comp_motion": float(np.mean(comp_motions)) if comp_motions else 0.0,
-                    "global_dx": float(global_dx),
-                    "global_dy": float(global_dy),
-                })
+                samples.append(
+                    {
+                        "clip_id": clip_id,
+                        "t": t,
+                        "active_tracks": len({d["track_id"] for d in detections if d["track_id"] >= 0}),
+                        "raw_motion": float(np.mean(raw_motions)) if raw_motions else 0.0,
+                        "comp_motion": float(np.mean(comp_motions)) if comp_motions else 0.0,
+                        "global_dx": float(global_dx),
+                        "global_dy": float(global_dy),
+                    }
+                )
 
                 annotated = annotate_frame(frame, detections, track_history, trail_length=TRAIL_LENGTH)
+
                 if output_size and (annotated.shape[1], annotated.shape[0]) != output_size:
                     annotated = cv2.resize(annotated, output_size)
+
                 writer.write(annotated)
                 prev_sampled_frame = frame.copy()
                 frame_idx += 1
@@ -247,11 +282,18 @@ def process_job(self, job_id: int):
                     class_name=class_name,
                     start_t=pts[0]["t"],
                     end_t=pts[-1]["t"],
-                    bbox_stats_json={"max_area": max(p["area"] for p in pts), "mean_area": float(np.mean([p["area"] for p in pts]))},
+                    bbox_stats_json={
+                        "max_area": max(p["area"] for p in pts),
+                        "mean_area": float(np.mean([p["area"] for p in pts])),
+                    },
                     motion_stats_json={
                         "points": len(pts),
-                        "avg_raw_speed": float(np.mean([np.hypot(p.get("raw_dx", 0.0), p.get("raw_dy", 0.0)) for p in pts])),
-                        "avg_compensated_speed": float(np.mean([np.hypot(p.get("comp_dx", 0.0), p.get("comp_dy", 0.0)) for p in pts])),
+                        "avg_raw_speed": float(
+                            np.mean([np.hypot(p.get("raw_dx", 0.0), p.get("raw_dy", 0.0)) for p in pts])
+                        ),
+                        "avg_compensated_speed": float(
+                            np.mean([np.hypot(p.get("comp_dx", 0.0), p.get("comp_dy", 0.0)) for p in pts])
+                        ),
                     },
                 )
                 db.add(track)
@@ -261,16 +303,46 @@ def process_job(self, job_id: int):
                 if class_name in VEHICLE_CLASSES:
                     cut_conf = _safe_conf(cut_in_confidence(pts, output_size[0] if output_size else 1280))
                     if cut_conf > 0.2:
-                        db.add(Event(job_id=job_id, clip_id=clip_id, track_id=track.id, type="cut_in", timestamp=pts[-1]["t"], confidence=cut_conf, details_json={"definition": "central zone crossing + fast area growth"}))
+                        db.add(
+                            Event(
+                                job_id=job_id,
+                                clip_id=clip_id,
+                                track_id=track.id,
+                                type="cut_in",
+                                timestamp=pts[-1]["t"],
+                                confidence=cut_conf,
+                                details_json={"definition": "central zone crossing + fast area growth"},
+                            )
+                        )
 
                     close_conf = _safe_conf(close_following_confidence(pts, output_size[0] if output_size else 1280))
                     if close_conf > 0.2:
-                        db.add(Event(job_id=job_id, clip_id=clip_id, track_id=track.id, type="close_following_proxy", timestamp=pts[-1]["t"], confidence=close_conf, details_json={"definition": "large centered bbox sustained"}))
+                        db.add(
+                            Event(
+                                job_id=job_id,
+                                clip_id=clip_id,
+                                track_id=track.id,
+                                type="close_following_proxy",
+                                timestamp=pts[-1]["t"],
+                                confidence=close_conf,
+                                details_json={"definition": "large centered bbox sustained"},
+                            )
+                        )
 
                 if class_name == "bicycle":
                     bike_conf = _safe_conf(bike_proximity_confidence(pts, output_size[0] if output_size else 1280))
                     if bike_conf > 0.2:
-                        db.add(Event(job_id=job_id, clip_id=clip_id, track_id=track.id, type="bike_proximity_lane_share_proxy", timestamp=pts[-1]["t"], confidence=bike_conf, details_json={"definition": "bicycle near ego-forward center"}))
+                        db.add(
+                            Event(
+                                job_id=job_id,
+                                clip_id=clip_id,
+                                track_id=track.id,
+                                type="bike_proximity_lane_share_proxy",
+                                timestamp=pts[-1]["t"],
+                                confidence=bike_conf,
+                                details_json={"definition": "bicycle near ego-forward center"},
+                            )
+                        )
 
         analytics_rows = []
         samples_by_clip: dict[str, list[dict]] = defaultdict(list)
@@ -294,15 +366,17 @@ def process_job(self, job_id: int):
                     "congestion_score": score,
                 }
                 analytics_rows.append(row)
-                db.add(AnalyticsWindow(
-                    job_id=job_id,
-                    clip_id=clip_id,
-                    t_start=w["t_start"],
-                    t_end=w["t_end"],
-                    congestion_score=score,
-                    counts_json={"active_tracks": w["active_tracks"]},
-                    motion_json={k: row[k] for k in ["avg_raw_speed", "avg_compensated_speed", "avg_speed_proxy", "stopped_ratio", "density_index"]},
-                ))
+                db.add(
+                    AnalyticsWindow(
+                        job_id=job_id,
+                        clip_id=clip_id,
+                        t_start=w["t_start"],
+                        t_end=w["t_end"],
+                        congestion_score=score,
+                        counts_json={"active_tracks": w["active_tracks"]},
+                        motion_json={k: row[k] for k in ["avg_raw_speed", "avg_compensated_speed", "avg_speed_proxy", "stopped_ratio", "density_index"]},
+                    )
+                )
 
         events = db.scalars(select(Event).where(Event.job_id == job_id)).all()
         tracks = db.scalars(select(Track).where(Track.job_id == job_id)).all()
@@ -335,18 +409,23 @@ def process_job(self, job_id: int):
                     raise PrivacyValidationError(msg)
                 f.write(json.dumps(row) + "\n")
 
-        pd.DataFrame([{
-            "datapack_version": DATAPACK_VERSION,
-            "clip_id": e.clip_id,
-            "event_id": e.id,
-            "type": e.type,
-            "timestamp": e.timestamp,
-            "confidence": e.confidence,
-            "track_id": e.track_id,
-            "details_json": json.dumps(e.details_json),
-            "clip_key": e.clip_key,
-            "review_status": e.review_status,
-        } for e in events]).to_csv(events_csv_path, index=False)
+        pd.DataFrame(
+            [
+                {
+                    "datapack_version": DATAPACK_VERSION,
+                    "clip_id": e.clip_id,
+                    "event_id": e.id,
+                    "type": e.type,
+                    "timestamp": e.timestamp,
+                    "confidence": e.confidence,
+                    "track_id": e.track_id,
+                    "details_json": json.dumps(e.details_json),
+                    "clip_key": e.clip_key,
+                    "review_status": e.review_status,
+                }
+                for e in events
+            ]
+        ).to_csv(events_csv_path, index=False)
 
         with open(tracks_path, "w", encoding="utf-8") as f:
             for track in tracks:
@@ -372,16 +451,21 @@ def process_job(self, job_id: int):
                     raise PrivacyValidationError(msg)
                 f.write(json.dumps(row) + "\n")
 
-        pd.DataFrame([{
-            "datapack_version": DATAPACK_VERSION,
-            "clip_id": t.clip_id,
-            "track_id": t.id,
-            "class": t.class_name,
-            "start_t": t.start_t,
-            "end_t": t.end_t,
-            "bbox_stats_json": json.dumps(t.bbox_stats_json),
-            "motion_stats_json": json.dumps(t.motion_stats_json),
-        } for t in tracks]).to_csv(tracks_csv_path, index=False)
+        pd.DataFrame(
+            [
+                {
+                    "datapack_version": DATAPACK_VERSION,
+                    "clip_id": t.clip_id,
+                    "track_id": t.id,
+                    "class": t.class_name,
+                    "start_t": t.start_t,
+                    "end_t": t.end_t,
+                    "bbox_stats_json": json.dumps(t.bbox_stats_json),
+                    "motion_stats_json": json.dumps(t.motion_stats_json),
+                }
+                for t in tracks
+            ]
+        ).to_csv(tracks_csv_path, index=False)
 
         windows_df = pd.DataFrame(analytics_rows)
         windows_df.to_parquet(windows_parquet_path, index=False)
@@ -409,11 +493,20 @@ def process_job(self, job_id: int):
             db.commit()
             logger.error("job.failed.privacy_validation", job_id=job_id, error=msg)
             raise PrivacyValidationError(msg)
+
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary_payload, f, indent=2)
 
         with zipfile.ZipFile(datapack_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for p in [summary_path, windows_parquet_path, windows_csv_path, events_path, events_csv_path, tracks_path, tracks_csv_path]:
+            for p in [
+                summary_path,
+                windows_parquet_path,
+                windows_csv_path,
+                events_path,
+                events_csv_path,
+                tracks_path,
+                tracks_csv_path,
+            ]:
                 zf.write(p, arcname=Path(p).name)
 
         artifacts = [
@@ -445,7 +538,11 @@ def process_job(self, job_id: int):
         payload_hash = hash_payload(marketplace_payload)
         marketplace_payload["sha256"] = payload_hash
         product_key = f"jobs/{job_id}/marketplace/product.json"
-        upload_bytes(product_key, json.dumps(marketplace_payload, separators=(",", ":")).encode("utf-8"), "application/json")
+        upload_bytes(
+            product_key,
+            json.dumps(marketplace_payload, separators=(",", ":")).encode("utf-8"),
+            "application/json",
+        )
 
         job.duration_s = total_duration
         job.fps_sampled = job_fps_sampled
@@ -459,10 +556,16 @@ def process_job(self, job_id: int):
         job.artifacts_json = {"artifacts": artifact_manifest, "clips": clip_manifest}
         job.status = "succeeded"
         job.logs_summary = (
-            f"Processed {len(clip_sources)} clip(s) with YOLO tracking ({'enabled' if model else 'fallback mode'}), "
+            f"Processed {len(clip_sources)} clip(s) with YOLO tracking (enabled), "
             f"tracks={sum(class_counts.values())}, events={sum(event_counts.values())}, artifacts={len(artifact_manifest)}"
         )
         if job.org_id:
             record_job_processed(db, job.org_id, total_duration)
         db.commit()
-        logger.info("job.completed", job_id=job_id, events=sum(event_counts.values()), artifacts=len(artifact_manifest), clips=len(clip_sources))
+        logger.info(
+            "job.completed",
+            job_id=job_id,
+            events=sum(event_counts.values()),
+            artifacts=len(artifact_manifest),
+            clips=len(clip_sources),
+        )
