@@ -3,22 +3,34 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-
 from app.core.logging import logger
 
+# Optional import: allows app to run even if ultralytics is unavailable
 try:
     from ultralytics import YOLO
 except Exception:  # pragma: no cover
     YOLO = None
 
 
-DEFAULT_TARGET_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle", "person"}
+DEFAULT_TARGET_CLASSES = {
+    "car",
+    "truck",
+    "bus",
+    "motorcycle",
+    "bicycle",
+    "person",
+}
 
 
 def load_yolo_model(weights: str = "/app/backend/yolov8n.pt") -> Any | None:
+    """
+    Load a YOLO model.
+    Returns None if ultralytics isn't available or the model fails to load.
+    """
     if YOLO is None:
         logger.warning("yolo.unavailable", reason="ultralytics import failed")
         return None
+
     try:
         return YOLO(weights)
     except Exception as exc:  # pragma: no cover
@@ -36,27 +48,81 @@ def track_frame(
     frame_height: int,
     target_classes: set[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """
+    Run tracking on a frame and return normalized detections with track ids (if available).
+    """
+
     if model is None:
         return []
 
     classes = target_classes or DEFAULT_TARGET_CLASSES
-    result = model.track(frame, persist=True, verbose=False)[0]
-    if result.boxes is None or len(result.boxes) == 0:
+
+    try:
+        results = model.track(frame, persist=True, verbose=False)
+        if not results:
+            return []
+        result = results[0]
+    except Exception as exc:  # pragma: no cover
+        logger.warning("yolo.track_failed", reason=str(exc))
         return []
 
-    boxes = result.boxes
-    ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
-    xys = boxes.xywh.cpu().numpy()
-    confs = boxes.conf.cpu().tolist() if boxes.conf is not None else [0.0] * len(boxes)
+    boxes = getattr(result, "boxes", None)
+    if boxes is None:
+        return []
+
+    try:
+        n = len(boxes)
+    except Exception:
+        return []
+
+    if n == 0:
+        return []
+
+    try:
+        xys = boxes.xywh.cpu().numpy()
+    except Exception:
+        return []
+
+    try:
+        confs = (
+            boxes.conf.cpu().tolist()
+            if getattr(boxes, "conf", None) is not None
+            else [0.0] * n
+        )
+    except Exception:
+        confs = [0.0] * n
+
+    try:
+        clses = boxes.cls.cpu().numpy().astype(int)
+    except Exception:
+        return []
+
+    ids_tensor = getattr(boxes, "id", None)
+    if ids_tensor is not None:
+        try:
+            ids = ids_tensor.int().cpu().tolist()
+        except Exception:
+            ids = [None] * n
+    else:
+        ids = [None] * n
+
+    names = getattr(result, "names", {}) or {}
 
     detections: list[dict[str, Any]] = []
-    for i, box in enumerate(boxes):
-        cls_name = result.names[int(box.cls[0])]
+    img_area = float(max(1, frame_width * frame_height))
+
+    for i in range(n):
+        cls_idx = int(clses[i])
+        cls_name = names.get(cls_idx, str(cls_idx))
+
         if cls_name not in classes:
             continue
+
         tid = ids[i] if i < len(ids) else None
         x, y, w, h = xys[i]
-        area = float(max(1.0, w * h))
+
+        area = float(max(1.0, float(w) * float(h)))
+
         detections.append(
             {
                 "clip_id": clip_id,
@@ -67,9 +133,10 @@ def track_frame(
                 "yc": float(y),
                 "w": float(w),
                 "h": float(h),
-                "conf": float(confs[i]),
+                "conf": float(confs[i]) if i < len(confs) else 0.0,
                 "area": area,
-                "area_ratio": area / float(max(1, frame_width * frame_height)),
+                "area_ratio": area / img_area,
             }
         )
+
     return detections
