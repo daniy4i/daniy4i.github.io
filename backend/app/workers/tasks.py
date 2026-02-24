@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import time
-import shutil
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 
 # Safe OpenCV import
@@ -21,13 +19,6 @@ from app.services.usage import record_job_processed
 from app.workers.celery_app import celery_app
 from app.workers.vision.tracking import load_yolo_model, track_frame
 from app.workers.vision.annotate import annotate_frame
-
-
-VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
-
-
-class PrivacyValidationError(RuntimeError):
-    """Raised when privacy validation fails for export payloads."""
 
 
 def _encode_preview_h264(src_path: str, out_path: str) -> None:
@@ -57,7 +48,6 @@ def _encode_preview_h264(src_path: str, out_path: str) -> None:
     name="app.workers.tasks.process_job",
     queue="video",
     autoretry_for=(Exception,),
-    dont_autoretry_for=(PrivacyValidationError,),
     retry_backoff=5,
     retry_kwargs={"max_retries": 3},
 )
@@ -87,7 +77,9 @@ def process_job(self, job_id: int):
             # 1. Download input video
             # ----------------------------
             input_path = Path(tmpdir) / "input.mp4"
-            download_file(job.input_key, str(input_path))
+
+            # ✅ THIS IS THE CORRECT FIELD
+            download_file(job.storage_key, str(input_path))
 
             # ----------------------------
             # 2. Open video
@@ -137,7 +129,7 @@ def process_job(self, job_id: int):
             writer.release()
 
             # ----------------------------
-            # 5. Encode preview video
+            # 5. Encode preview
             # ----------------------------
             preview_path = Path(tmpdir) / "preview_tracking.mp4"
             _encode_preview_h264(str(raw_output_path), str(preview_path))
@@ -158,17 +150,13 @@ def process_job(self, job_id: int):
         duration_s = time.time() - start_time
 
         job.status = "completed"
-        job.duration_s = int(duration_s)
+        job.duration_s = duration_s
         db.commit()
 
-        record_job_processed(db, job.org_id, duration_s=duration_s)
+        if job.org_id:
+            record_job_processed(db, job.org_id, duration_s=duration_s)
 
         logger.info(f"Job {job_id} completed successfully.")
-
-    except PrivacyValidationError:
-        job.status = "failed"
-        db.commit()
-        raise
 
     except Exception as exc:
         logger.exception(f"Job {job_id} failed: {exc}")
