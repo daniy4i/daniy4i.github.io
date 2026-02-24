@@ -122,7 +122,7 @@ def process_job(self, job_id: int):
         job.status = "completed"
         db.commit()
 
-        record_job_processed(db, job, duration_s=0)
+        record_job_processed(db, job.org_id, duration_s=0)
 
         logger.info(f"Job {job_id} completed successfully.")
 
