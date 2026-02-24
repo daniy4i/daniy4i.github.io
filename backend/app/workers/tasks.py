@@ -73,17 +73,11 @@ def process_job(self, job_id: int):
 
         with tempfile.TemporaryDirectory() as tmpdir:
 
-            # ----------------------------
-            # 1. Download input video
-            # ----------------------------
+            # 1️⃣ Download input video
             input_path = Path(tmpdir) / "input.mp4"
-
-            # ✅ THIS IS THE CORRECT FIELD
             download_file(job.storage_key, str(input_path))
 
-            # ----------------------------
-            # 2. Open video
-            # ----------------------------
+            # 2️⃣ Open video
             cap = cv2.VideoCapture(str(input_path))
             if not cap.isOpened():
                 raise RuntimeError("Failed to open video")
@@ -102,41 +96,44 @@ def process_job(self, job_id: int):
                 (width, height),
             )
 
-            # ----------------------------
-            # 3. Load YOLO model
-            # ----------------------------
+            # 3️⃣ Load YOLO model
             model = load_yolo_model()
             if model is None:
                 raise RuntimeError("YOLO model failed to load")
 
             frame_index = 0
+            clip_id = "main"
 
-            # ----------------------------
-            # 4. Frame processing loop
-            # ----------------------------
+            # 4️⃣ Frame processing loop
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
 
-                tracks = track_frame(model, frame)
-                annotated = annotate_frame(frame, tracks)
+                timestamp_s = frame_index / fps
 
+                tracks = track_frame(
+                    model,
+                    frame,
+                    clip_id=clip_id,
+                    timestamp_s=timestamp_s,
+                    frame_width=width,
+                    frame_height=height,
+                )
+
+                annotated = annotate_frame(frame, tracks)
                 writer.write(annotated)
+
                 frame_index += 1
 
             cap.release()
             writer.release()
 
-            # ----------------------------
-            # 5. Encode preview
-            # ----------------------------
+            # 5️⃣ Encode preview
             preview_path = Path(tmpdir) / "preview_tracking.mp4"
             _encode_preview_h264(str(raw_output_path), str(preview_path))
 
-            # ----------------------------
-            # 6. Upload preview artifact
-            # ----------------------------
+            # 6️⃣ Upload preview artifact
             with open(preview_path, "rb") as f:
                 upload_bytes(
                     key=f"jobs/{job.id}/preview_tracking.mp4",
@@ -144,9 +141,7 @@ def process_job(self, job_id: int):
                     content_type="video/mp4",
                 )
 
-        # ----------------------------
-        # 7. Finalize job
-        # ----------------------------
+        # 7️⃣ Finalize job
         duration_s = time.time() - start_time
 
         job.status = "completed"
