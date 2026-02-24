@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
+import time
 import shutil
 import subprocess
+import tempfile
 import zipfile
+from pathlib import Path
 
 # Safe OpenCV import
 try:
@@ -14,8 +16,11 @@ except Exception:
 from app.core.logging import logger
 from app.db.session import SessionLocal
 from app.models.entities import Job
+from app.services.storage import download_file, upload_bytes
 from app.services.usage import record_job_processed
 from app.workers.celery_app import celery_app
+from app.workers.vision.tracking import load_yolo_model, track_frame
+from app.workers.vision.annotate import annotate_frame
 
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
@@ -23,41 +28,6 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv"}
 
 class PrivacyValidationError(RuntimeError):
     """Raised when privacy validation fails for export payloads."""
-
-
-def _safe_name(name: str) -> str:
-    return "".join(
-        c if c.isalnum() or c in {"_", "-", "."} else "_"
-        for c in Path(name).name
-    )
-
-
-def _extract_zip_inputs(zip_path: str, out_dir: str):
-    clips = []
-
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-
-            raw_name = Path(info.filename)
-
-            if raw_name.is_absolute() or ".." in raw_name.parts:
-                continue
-
-            if raw_name.suffix.lower() not in VIDEO_EXTS:
-                continue
-
-            clip_id = _safe_name(raw_name.stem)[:48] or f"clip_{len(clips) + 1}"
-            ext = raw_name.suffix.lower()
-            dst = Path(out_dir) / f"{clip_id}{ext}"
-
-            with zf.open(info) as src, open(dst, "wb") as out:
-                shutil.copyfileobj(src, out)
-
-            clips.append((clip_id, str(dst)))
-
-    return clips
 
 
 def _encode_preview_h264(src_path: str, out_path: str) -> None:
@@ -79,7 +49,6 @@ def _encode_preview_h264(src_path: str, out_path: str) -> None:
         "-an",
         out_path,
     ]
-
     subprocess.run(cmd, check=True)
 
 
@@ -106,23 +75,93 @@ def process_job(self, job_id: int):
         db.commit()
 
         if cv2 is None:
-            raise RuntimeError(
-                "OpenCV failed to import. Ensure opencv-python-headless is installed."
-            )
+            raise RuntimeError("OpenCV not available")
 
         logger.info(f"Processing job {job_id}")
 
+        start_time = time.time()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+
+            # ----------------------------
+            # 1. Download input video
+            # ----------------------------
+            input_path = Path(tmpdir) / "input.mp4"
+            download_file(job.input_key, str(input_path))
+
+            # ----------------------------
+            # 2. Open video
+            # ----------------------------
+            cap = cv2.VideoCapture(str(input_path))
+            if not cap.isOpened():
+                raise RuntimeError("Failed to open video")
+
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            raw_output_path = Path(tmpdir) / "annotated_raw.mp4"
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(
+                str(raw_output_path),
+                fourcc,
+                fps,
+                (width, height),
+            )
+
+            # ----------------------------
+            # 3. Load YOLO model
+            # ----------------------------
+            model = load_yolo_model()
+            if model is None:
+                raise RuntimeError("YOLO model failed to load")
+
+            frame_index = 0
+
+            # ----------------------------
+            # 4. Frame processing loop
+            # ----------------------------
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                tracks = track_frame(model, frame, frame_index)
+                annotated = annotate_frame(frame, tracks)
+
+                writer.write(annotated)
+                frame_index += 1
+
+            cap.release()
+            writer.release()
+
+            # ----------------------------
+            # 5. Encode preview video
+            # ----------------------------
+            preview_path = Path(tmpdir) / "preview_tracking.mp4"
+            _encode_preview_h264(str(raw_output_path), str(preview_path))
+
+            # ----------------------------
+            # 6. Upload preview artifact
+            # ----------------------------
+            with open(preview_path, "rb") as f:
+                upload_bytes(
+                    key=f"jobs/{job.id}/preview_tracking.mp4",
+                    data=f.read(),
+                    content_type="video/mp4",
+                )
+
         # ----------------------------
-        # PLACEHOLDER PIPELINE
+        # 7. Finalize job
         # ----------------------------
-        # You can safely re-add YOLO / tracking logic later
-        # System will boot cleanly with this version
-        # ----------------------------
+        duration_s = time.time() - start_time
 
         job.status = "completed"
+        job.duration_s = int(duration_s)
         db.commit()
 
-        record_job_processed(db, job.org_id, duration_s=0)
+        record_job_processed(db, job.org_id, duration_s=duration_s)
 
         logger.info(f"Job {job_id} completed successfully.")
 
