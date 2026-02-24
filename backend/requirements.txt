@@ -14,13 +14,15 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
+
+# YOLO + Torch (CPU)
+ultralytics==8.3.0
+torch==2.3.1
+torchvision==0.18.1
+
 ffmpeg-python==0.2.0
 httpx==0.27.2
 pandas==2.2.3
 pyarrow==18.0.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
-# YOLO + Torch (CPU)
-ultralytics==8.3.0
-torch==2.3.1
-torchvision==0.18.1

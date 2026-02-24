@@ -3,22 +3,29 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-
 from app.core.logging import logger
 
-# Optional import: lets the app run even if ultralytics isn't installed in some envs
+# Optional import: allows app to run even if ultralytics is unavailable
 try:
     from ultralytics import YOLO
 except Exception:  # pragma: no cover
     YOLO = None
 
 
-DEFAULT_TARGET_CLASSES = {"car", "truck", "bus", "motorcycle", "bicycle", "person"}
+DEFAULT_TARGET_CLASSES = {
+    "car",
+    "truck",
+    "bus",
+    "motorcycle",
+    "bicycle",
+    "person",
+}
 
 
-def load_yolo_model(weights: str = "yolov8n.pt") -> Any | None:
+def load_yolo_model(weights: str = "/app/backend/yolov8n.pt") -> Any | None:
     """
-    Load a YOLO model. Returns None if ultralytics isn't available or the model fails to load.
+    Load a YOLO model.
+    Returns None if ultralytics isn't available or the model fails to load.
     """
     if YOLO is None:
         logger.warning("yolo.unavailable", reason="ultralytics import failed")
@@ -44,6 +51,7 @@ def track_frame(
     """
     Run tracking on a frame and return normalized detections with track ids (if available).
     """
+
     if model is None:
         return []
 
@@ -62,7 +70,6 @@ def track_frame(
     if boxes is None:
         return []
 
-    # Ultralytics Boxes store tensors on device; move to CPU numpy/lists safely
     try:
         n = len(boxes)
     except Exception:
@@ -71,25 +78,25 @@ def track_frame(
     if n == 0:
         return []
 
-    # xywh: (n, 4) => x_center, y_center, width, height (in pixels)
     try:
         xys = boxes.xywh.cpu().numpy()
     except Exception:
         return []
 
-    # conf: (n,) floats
     try:
-        confs = boxes.conf.cpu().tolist() if getattr(boxes, "conf", None) is not None else [0.0] * n
+        confs = (
+            boxes.conf.cpu().tolist()
+            if getattr(boxes, "conf", None) is not None
+            else [0.0] * n
+        )
     except Exception:
         confs = [0.0] * n
 
-    # cls: (n,) ints
     try:
         clses = boxes.cls.cpu().numpy().astype(int)
     except Exception:
         return []
 
-    # ids: (n,) ints or None
     ids_tensor = getattr(boxes, "id", None)
     if ids_tensor is not None:
         try:

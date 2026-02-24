@@ -1,9 +1,21 @@
-import cv2
+from __future__ import annotations
+
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
+
 import numpy as np
 
 
-def estimate_global_motion(prev_frame: np.ndarray | None, curr_frame: np.ndarray | None) -> tuple[float, float]:
+def estimate_global_motion(
+    prev_frame: np.ndarray | None,
+    curr_frame: np.ndarray | None,
+) -> tuple[float, float]:
     """Estimate camera/global motion between two frames as (dx, dy) in pixels."""
+    if cv2 is None:
+        return 0.0, 0.0
+
     if prev_frame is None or curr_frame is None:
         return 0.0, 0.0
 
