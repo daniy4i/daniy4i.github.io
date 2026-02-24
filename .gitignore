@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+backend/.venv/
+backend/traffic.db
+node_modules/
+.next/
