@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from collections import defaultdict
 
-# 🔥 CRITICAL — MUST be above decorator
+# MUST be above decorator
 from app.workers.celery_app import celery_app
 
 # Safe OpenCV import
@@ -100,7 +100,6 @@ def process_job(self, job_id: int):
             if model is None:
                 raise RuntimeError("YOLO model failed to load")
 
-            # 🔥 Track memory across frames
             track_history = defaultdict(list)
 
             frame_index = 0
@@ -133,10 +132,11 @@ def process_job(self, job_id: int):
             preview_path = Path(tmpdir) / "preview_tracking.mp4"
             _encode_preview_h264(str(raw_output_path), str(preview_path))
 
+            # ✅ FIXED HERE
             with open(preview_path, "rb") as f:
                 upload_bytes(
                     key=f"jobs/{job.id}/preview_tracking.mp4",
-                    data=f.read(),
+                    payload=f.read(),
                     content_type="video/mp4",
                 )
 
