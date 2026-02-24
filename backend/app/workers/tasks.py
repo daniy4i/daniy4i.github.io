@@ -1,4 +1,50 @@
+from __future__ import annotations
+
+import time
+import subprocess
+import tempfile
+from pathlib import Path
 from collections import defaultdict
+
+# 🔥 CRITICAL — MUST be above decorator
+from app.workers.celery_app import celery_app
+
+# Safe OpenCV import
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
+from app.core.logging import logger
+from app.db.session import SessionLocal
+from app.models.entities import Job
+from app.services.storage import download_file, upload_bytes
+from app.services.usage import record_job_processed
+from app.workers.vision.tracking import load_yolo_model, track_frame
+from app.workers.vision.annotate import annotate_frame
+
+
+def _encode_preview_h264(src_path: str, out_path: str) -> None:
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        src_path,
+        "-vf",
+        "scale=-2:720,fps=15",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-b:v",
+        "2200k",
+        "-movflags",
+        "+faststart",
+        "-an",
+        out_path,
+    ]
+    subprocess.run(cmd, check=True)
+
 
 @celery_app.task(
     bind=True,
@@ -25,7 +71,6 @@ def process_job(self, job_id: int):
             raise RuntimeError("OpenCV not available")
 
         logger.info(f"Processing job {job_id}")
-
         start_time = time.time()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -55,7 +100,7 @@ def process_job(self, job_id: int):
             if model is None:
                 raise RuntimeError("YOLO model failed to load")
 
-            # 🔥 TRACK MEMORY FIX
+            # 🔥 Track memory across frames
             track_history = defaultdict(list)
 
             frame_index = 0
@@ -77,7 +122,6 @@ def process_job(self, job_id: int):
                     frame_height=height,
                 )
 
-                # ✅ pass track_history properly
                 annotated = annotate_frame(frame, tracks, track_history)
                 writer.write(annotated)
 
