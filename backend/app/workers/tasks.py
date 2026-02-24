@@ -119,7 +119,7 @@ def process_job(self, job_id: int):
                 if not ret:
                     break
 
-                tracks = track_frame(model, frame, frame_index)
+                tracks = track_frame(model, frame)
                 annotated = annotate_frame(frame, tracks)
 
                 writer.write(annotated)
